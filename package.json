@@ -1,0 +1,50 @@
+{
+  "name": "dsh-panel-control",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Manage the global panel navigation at the top of the DSH sidebar: reorder, hide and group every entry, with the layout persisted per installation.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "sidebar",
+    "panel"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md",
+    "assets",
+    "screenshots.json",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "license": "MIT",
+  "author": {
+    "name": "QIUZAIYOU"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/QIUZAIYOU/dsh-panel-control.git"
+  },
+  "homepage": "https://github.com/QIUZAIYOU/dsh-panel-control#readme",
+  "bugs": {
+    "url": "https://github.com/QIUZAIYOU/dsh-panel-control/issues"
+  }
+}
