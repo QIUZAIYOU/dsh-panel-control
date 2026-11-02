@@ -829,6 +829,74 @@ function build(require) {
     return h('span', { className: 'dpc-glyph', 'aria-hidden': true }, node);
   }
 
+  // A native <select> gets its option list painted by the OS widget: it ignores
+  // page colors and pops up white-on-white against this theme. This picker draws
+  // the same choice in our own colors.
+  function GroupPicker(props) {
+    const [open, setOpen] = React.useState(false);
+    const rootRef = React.useRef(null);
+    React.useEffect(() => {
+      if (!open) return undefined;
+      const close = (event) => {
+        if (event.type === 'keydown' && event.key !== 'Escape') return;
+        if (event.type === 'mousedown' && rootRef.current && rootRef.current.contains(event.target)) return;
+        setOpen(false);
+      };
+      document.addEventListener('mousedown', close, true);
+      document.addEventListener('keydown', close, true);
+      return () => {
+        document.removeEventListener('mousedown', close, true);
+        document.removeEventListener('keydown', close, true);
+      };
+    }, [open]);
+    const value = props.value || '';
+    const options = [{ value: '', label: props.ungrouped }].concat(
+      (props.groups || []).map((group) => ({ value: group.id, label: group.name })),
+    );
+    const current = options.find((option) => option.value === value) || options[0];
+    return h(
+      'div',
+      { className: 'dpc-picker', ref: rootRef, 'data-open': open ? 'true' : undefined },
+      h(
+        'button',
+        {
+          type: 'button',
+          className: 'dpc-pickerBtn',
+          'aria-haspopup': 'listbox',
+          'aria-expanded': open ? 'true' : 'false',
+          'aria-label': props.label,
+          title: props.label,
+          onClick: () => setOpen((was) => !was),
+        },
+        h('span', { className: 'dpc-pickerText' }, current.label),
+        h('span', { className: 'dpc-caret', 'aria-hidden': 'true' }),
+      ),
+      open
+        ? h(
+            'div',
+            { className: 'dpc-menu', role: 'listbox', 'aria-label': props.label },
+            options.map((option) =>
+              h(
+                'button',
+                {
+                  key: option.value || '__ungrouped',
+                  type: 'button',
+                  role: 'option',
+                  className: 'dpc-option',
+                  'aria-selected': option.value === value ? 'true' : 'false',
+                  onClick: () => {
+                    setOpen(false);
+                    props.onPick(option.value);
+                  },
+                },
+                option.label,
+              ),
+            ),
+          )
+        : null,
+    );
+  }
+
   function PanelManager() {
     const state = useStore();
     const prefs = state.prefs;
@@ -977,18 +1045,14 @@ function build(require) {
         isHidden ? h('span', { className: 'dpc-chip' }, t('hiddenChip')) : null,
         (prefs.groups || []).length === 0
           ? null
-          : h(
-              'select',
-              {
-                className: 'dpc-select',
-                value: prefs.assign[id] || '',
-                'aria-label': t('groupLabel'),
-                title: t('groupLabel'),
-                onChange: (event) => setGroup(id, event.target.value),
-              },
-              h('option', { value: '' }, t('ungrouped')),
-              (prefs.groups || []).map((group) => h('option', { key: group.id, value: group.id }, group.name)),
-            ),
+          : h(GroupPicker, {
+              id,
+              groups: prefs.groups || [],
+              value: prefs.assign[id] || '',
+              label: t('groupLabel'),
+              ungrouped: t('ungrouped'),
+              onPick: (next) => setGroup(id, next),
+            }),
         h(
           'button',
           {
@@ -1168,8 +1232,16 @@ function build(require) {
     .dpc-key{font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:10.5px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.4));min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 60px}
     .dpc-chip{font-size:10.5px;line-height:16px;padding:0 6px;border-radius:var(--dsw-radius-xs,6px);border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.6));white-space:nowrap;flex:none}
     .dpc-chip-locked{color:var(--dsw-alias-label-primary-bluish,#9db4f0);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 40%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 10%,transparent)}
-    .dpc-select{appearance:none;flex:0 1 auto;min-width:0;max-width:150px;padding:3px 22px 3px 8px;background-image:url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.4' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 7px center;font:inherit;font-size:11.5px;color:var(--dsw-alias-label-primary,#ececf1);background:var(--dsw-alias-bg-l2,rgba(255,255,255,.05));border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-sm,6px);cursor:pointer}
-    .dpc-select:hover{border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.26))}
+    .dpc-picker{position:relative;flex:none;display:flex}
+    .dpc-pickerBtn{appearance:none;display:inline-flex;align-items:center;gap:6px;max-width:150px;padding:3px 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-sm,6px);background-color:rgba(255,255,255,.06);color:var(--dsw-alias-label-primary,#ececf1);font:inherit;font-size:11.5px;line-height:16px;cursor:pointer;transition:background .16s,border-color .16s}
+    .dpc-pickerBtn:hover,.dpc-picker[data-open="true"] .dpc-pickerBtn{background-color:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.26))}
+    .dpc-pickerText{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dpc-caret{flex:none;width:7px;height:7px;margin-top:-3px;border-right:1.2px solid currentColor;border-bottom:1.2px solid currentColor;transform:rotate(45deg);opacity:.6}
+    .dpc-picker[data-open="true"] .dpc-caret{margin-top:2px;transform:rotate(225deg)}
+    .dpc-menu{position:absolute;z-index:50;top:calc(100% + 4px);right:0;min-width:140px;max-width:220px;padding:4px;display:flex;flex-direction:column;gap:1px;background:var(--dsw-alias-bg-elevated,#2b2b31);border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-md,8px);box-shadow:0 10px 26px rgba(0,0,0,.5)}
+    .dpc-option{appearance:none;text-align:left;padding:5px 8px;border:0;border-radius:var(--dsw-radius-xs,5px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.8));font:inherit;font-size:12px;line-height:16px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .dpc-option:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.2));color:var(--dsw-alias-label-primary,#ececf1)}
+    .dpc-option[aria-selected="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 18%,transparent);color:var(--dsw-alias-label-primary-bluish,#9db4f0)}
     .dpc-mini{appearance:none;flex:none;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:.5px solid transparent;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.7));font:inherit;font-size:12px;line-height:1;cursor:pointer}
     .dpc-mini:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));border-color:var(--dsw-alias-border-l2,rgba(255,255,255,.16));color:var(--dsw-alias-label-primary,#ececf1)}
     .dpc-mini:disabled{opacity:.3;cursor:default}
