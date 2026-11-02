@@ -32,6 +32,9 @@ function build(require) {
   const SLOT_SETTINGS = 'settings.section';
   const PANEL_KEY = 'panel-control';
   const STORAGE_KEY = 'dsh.panel-control.v1';
+  /** Host route that answers "file these entries into groups" (see index.js). */
+  const RPC_CHANNEL = '/api';
+  const RPC_ENDPOINT = 'dsh-panel-control/classify';
   /** Rows start at 100 so an unmanaged flex sibling stays at the very end. */
   const ORDER_START = 100;
   const ORDER_STEP = 10;
@@ -90,6 +93,20 @@ function build(require) {
     diagNone: { zh: '—', en: '—' },
     openPanel: { zh: '打开面板管理', en: 'Open panel manager' },
     resetDone: { zh: '已恢复默认顺序与可见性。', en: 'Order and visibility were reset.' },
+    autoTitle: { zh: '自动分类', en: 'Auto classify' },
+    autoHint: {
+      zh: '打开后，本插件会让当前会话的默认模型把这些入口分成 2–4 组。分组只是侧栏里的分隔线，入口本身不会被改动；结果保存在本机。',
+      en: 'When on, the default model files these entries into 2-4 groups. Groups are only titled dividers in the sidebar and entries are never changed; the result is kept on this machine.',
+    },
+    autoRunning: { zh: '正在分类…', en: 'Classifying…' },
+    autoAgain: { zh: '重新分类', en: 'Classify again' },
+    autoDone: { zh: '模型已分成 {n} 组（{m}）。', en: 'The model filed them into {n} groups ({m}).' },
+    autoFailed: { zh: '分类失败：{m}', en: 'Classification failed: {m}' },
+    autoUnavailable: {
+      zh: '这一版客户端拿不到宿主的连接服务，无法调用模型。',
+      en: 'This Client build does not expose the Host connection, so the model cannot be called.',
+    },
+    autoEmpty: { zh: '没有可分类的入口。', en: 'There is nothing to classify.' },
   };
 
   let ctxRef = null;
@@ -126,7 +143,7 @@ function build(require) {
 
   /* ---------------------------------------------------------------- prefs */
 
-  const emptyPrefs = () => ({ order: [], hidden: [], groups: [], assign: {} });
+  const emptyPrefs = () => ({ order: [], hidden: [], groups: [], assign: {}, auto: false });
 
   /** Keep only the shapes this plugin writes, so a hand-edited store cannot crash it. */
   function sanitize(raw) {
@@ -151,6 +168,7 @@ function build(require) {
         out.assign[panelId] = groupId;
       }
     }
+    out.auto = raw.auto === true;
     return out;
   }
 
@@ -171,7 +189,7 @@ function build(require) {
     }
   }
 
-  const store = { state: { prefs: loadPrefs(), entries: [] }, listeners: new Set() };
+  const store = { state: { prefs: loadPrefs(), entries: [], autoState: { status: 'idle', message: '', groups: 0 } }, listeners: new Set() };
 
   function emit() {
     for (const listener of Array.from(store.listeners)) {
@@ -645,6 +663,121 @@ function build(require) {
     commit({ ...prefs, groups, assign });
   }
 
+  /* ------------------------------------------------------- auto classify */
+
+  /**
+   * Auto classify asks the Host for one small model call: this half cannot reach
+   * a model, and the Host half exposes exactly one route for it. Both halves
+   * are optional to each other — without the route the switch reports why.
+   */
+  let lastFiledSignature = '';
+
+  function entriesSignature() {
+    return (store.state.entries || [])
+      .map((entry) => entry.id)
+      .sort()
+      .join('|');
+  }
+
+  function setAuto(patch) {
+    const current = store.state.autoState || { status: 'idle', message: '', groups: 0 };
+    setState({ autoState: { ...current, ...patch } });
+  }
+
+  /** The Host connection, however this Client build exposes it. */
+  function getRpc() {
+    const ctx = ctxRef;
+    if (!ctx) return null;
+    let connection = null;
+    try {
+      connection = ctx.connection || null;
+    } catch {
+      connection = null;
+    }
+    if (!connection && typeof ctx.get === 'function') {
+      try {
+        connection = ctx.get('connection') || null;
+      } catch {
+        connection = null;
+      }
+    }
+    const rpc = connection && connection.rpc;
+    return rpc && typeof rpc.call === 'function' ? rpc : null;
+  }
+
+  function groupIdForName(groups, name) {
+    const wanted = String(name || '').trim();
+    const key = wanted.toLowerCase();
+    const existing = groups.find((group) => String(group.name || '').trim().toLowerCase() === key);
+    if (existing) return existing.id;
+    const id = `g${Date.now().toString(36)}${Math.floor(Math.random() * 1000).toString(36)}`;
+    groups.push({ id, name: (wanted || `#${groups.length + 1}`).slice(0, 40) });
+    return id;
+  }
+
+  /** Write the model's filing into the same preferences the UI edits. */
+  function applyClassification(value) {
+    const known = new Set((store.state.entries || []).map((entry) => entry.id));
+    const groups = (prefsNow().groups || []).slice();
+    const assign = {};
+    const order = [];
+    let count = 0;
+    for (const group of (value && value.groups) || []) {
+      const groupId = groupIdForName(groups, group.name);
+      for (const id of group.ids || []) {
+        if (!known.has(id) || order.includes(id)) continue;
+        order.push(id);
+        assign[id] = groupId;
+      }
+      count += 1;
+    }
+    for (const id of orderNow()) if (!order.includes(id)) order.push(id);
+    commit({ ...prefsNow(), groups, assign, order });
+    lastFiledSignature = entriesSignature();
+    setAuto({
+      status: 'done',
+      groups: count,
+      message: fill(t('autoDone'), { n: count, m: (value && value.model) || 'model' }),
+    });
+  }
+
+  async function classifyNow() {
+    const entries = store.state.entries || [];
+    if (entries.length === 0) {
+      setAuto({ status: 'error', message: t('autoEmpty') });
+      return;
+    }
+    const rpc = getRpc();
+    if (!rpc) {
+      setAuto({ status: 'error', message: t('autoUnavailable') });
+      return;
+    }
+    setAuto({ status: 'running', message: t('autoRunning'), groups: 0 });
+    try {
+      const result = await rpc.call(RPC_CHANNEL, RPC_ENDPOINT, {
+        method: 'classify',
+        payload: {
+          entries: entries.map((entry) => ({ id: entry.id, label: entry.label })),
+          groups: (prefsNow().groups || []).map((group) => ({ name: group.name })),
+          locale: activeLang(),
+        },
+      });
+      if (!result || result.ok !== true) {
+        const message = result && result.error && result.error.message ? result.error.message : 'unknown error';
+        throw new Error(message);
+      }
+      applyClassification(result.value);
+    } catch (error) {
+      setAuto({ status: 'error', message: fill(t('autoFailed'), { m: (error && error.message) || String(error) }) });
+    }
+  }
+
+  function toggleAuto() {
+    const next = !prefsNow().auto;
+    commit({ ...prefsNow(), auto: next });
+    if (next) classifyNow();
+  }
+
   /* ------------------------------------------------------------ components */
 
   const ICON_PATHS = [
@@ -707,6 +840,17 @@ function build(require) {
       if (engine) engine.refresh();
     }, [engine]);
 
+    // While the switch is on, a newly registered entry is filed as well. A failed
+    // attempt is not retried automatically, so a dead route cannot loop.
+    React.useEffect(() => {
+      if (prefs.auto !== true) return;
+      const status = (state.autoState || {}).status;
+      if (status === 'running' || status === 'error') return;
+      if (entries.length === 0) return;
+      if (entriesSignature() === lastFiledSignature) return;
+      classifyNow();
+    }, [prefs.auto, entries.length, state.autoState && state.autoState.status]);
+
     const order = normalize(prefs, entries);
     const labelOf = new Map(entries.map((entry) => [entry.id, entry.label]));
     const hidden = new Set(prefs.hidden || []);
@@ -741,6 +885,55 @@ function build(require) {
     );
 
     
+    const autoOn = prefs.auto === true;
+    const autoState = state.autoState || { status: 'idle', message: '', groups: 0 };
+    const auto = h(
+      'section',
+      { className: 'dpc-section dpc-auto' },
+      h(
+        'header',
+        { className: 'dpc-sectionHead' },
+        h(
+          'div',
+          { className: 'dpc-autoText' },
+          h('h3', { className: 'dpc-sectionTitle' }, t('autoTitle')),
+          h('p', { className: 'dpc-hint' }, t('autoHint')),
+        ),
+        h(
+          'div',
+          { className: 'dpc-autoActions' },
+          autoOn
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dpc-ghost',
+                  onClick: () => classifyNow(),
+                  disabled: autoState.status === 'running',
+                },
+                t('autoAgain'),
+              )
+            : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dpc-switch',
+              role: 'switch',
+              'aria-checked': autoOn ? 'true' : 'false',
+              'aria-label': t('autoTitle'),
+              title: t('autoTitle'),
+              onClick: toggleAuto,
+            },
+            h('span', { className: 'dpc-switchKnob', 'aria-hidden': true }),
+          ),
+        ),
+      ),
+      autoState.status === 'idle' || autoState.message === ''
+        ? null
+        : h('p', { className: 'dpc-autoLine', 'data-error': autoState.status === 'error' ? 'true' : 'false' }, autoState.message),
+    );
+
     const rows = order.map((id, position) => {
       const label = labelOf.get(id) || id;
       const isHidden = hidden.has(id);
@@ -909,6 +1102,7 @@ function build(require) {
       { className: 'dpc-root' },
       head,
       meta,
+      auto,
       order.length === 0
         ? h('p', { className: 'dpc-empty' }, t('empty'))
         : h('ul', { className: 'dpc-list' }, rows),
@@ -998,6 +1192,17 @@ function build(require) {
     .dpc-diagList dt{opacity:.7}
     .dpc-diagList dd{margin:0;font-family:var(--dsw-font-family-code,ui-monospace,monospace)}
     .dpc-error{color:var(--dsw-alias-label-error,#e06a6a)}
+    .dpc-autoText{min-width:0}
+    .dpc-autoText .dpc-hint{margin-top:2px;max-width:62ch}
+    .dpc-autoActions{display:flex;align-items:center;gap:8px;flex:none}
+    .dpc-autoLine{margin:0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.7))}
+    .dpc-autoLine[data-error="true"]{color:var(--dsw-alias-label-error,#e06a6a)}
+    .dpc-switch{appearance:none;flex:none;position:relative;width:34px;height:20px;padding:0;border:0;border-radius:999px;background:var(--dsw-alias-bg-l3,rgba(255,255,255,.14));cursor:pointer;transition:background .16s ease}
+    .dpc-switch:hover{background:var(--dsw-alias-border-l3,rgba(255,255,255,.26))}
+    .dpc-switch[aria-checked="true"]{background:var(--dsw-alias-state-business-primary,#5865f2)}
+    .dpc-switch[aria-checked="true"]:hover{background:var(--dsw-alias-button-primary-hover,#4a56d8)}
+    .dpc-switchKnob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .16s ease}
+    .dpc-switch[aria-checked="true"] .dpc-switchKnob{transform:translateX(14px)}
     .dpc-settings{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 2px}
     .dpc-settingsText{min-width:0}
     .dpc-settingsTitle{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary,#ececf1)}
