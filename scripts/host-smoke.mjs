@@ -13,7 +13,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const MODULE = pathToFileURL(path.join(here, '..', 'index.js')).href;
+// `npm run smoke -- <file>` points the harness at another copy, which is how
+// a regression (or the broken revision that shipped once) gets reproduced.
+const override = process.argv[2];
+const MODULE = pathToFileURL(override ? path.resolve(override) : path.join(here, '..', 'index.js')).href;
 
 const timers = [];
 const realSetTimeout = globalThis.setTimeout;

@@ -79,6 +79,36 @@ python -m http.server 8787 --bind 127.0.0.1   # 在仓库根目录
 
 排查顺序：`~/.dsh/panel-control/host.log` 看 Host 有没有挂上路由 → `client.log` 看有没有 `boot` → 两条都有但侧栏没入口，就按一次刷新按钮。
 
+## 让 DSH 崩掉的两件事
+
+这两条都是真崩过的，不是推测。
+
+**一、半装的插件是致命的。** `dsh.profile.bundles` 里写了一个名字，但 `dependencies` 里没有、`node_modules` 里也没有可解析的包，Host 启动时就会去加载这个不存在的包；这个失败发生在 Cordis 的逐个插件错误边界之外，于是整个 Host 进程直接退出——不是「这个插件没加载」，是「应用打不开」。手改 `bundles` 最容易造成这个状态。
+
+所以安装拆成顺序固定、每步都校验的三步（依赖 → 链接 → 清单），任何一步失败就整体回滚：
+
+```bash
+npm run enable                 # 装进 desktop profile，最后校验整份清单
+npm run enable -- --disable    # 三步一起撤掉
+npm run doctor                 # 只检查：每个 bundle 是否都能解析
+```
+
+`doctor` 也会揪出别的断链插件（指向已删除目录的 `link:` 依赖、名字与 `package.json` 不符的包），它只读真实 profile，不改任何东西。
+
+**二、Node 定时器里的回调没有错误边界。** `setTimeout` / `Promise` 回调不在 Cordis 的 `apply` 调用栈里，那里抛出的异常没人接，就是进程级 fatal。第一个版本正是在 20 秒看门狗里调了一个已被删掉的函数，启动 20 秒后必崩，日志里只留一行「客户端半没上报」。
+
+现在每个延迟回调都自己包 `try/catch`，调用点再加一层 `.catch(...)`；`npm run check` 里的 `scripts/host-smoke.mjs` 会劫持 `setTimeout` 并把回调**真的执行一遍**，再驱动 `inventory` / `report` / 403 三条路由。对着 0.3.6 那份代码跑，它会清清楚楚地报：
+
+```
+FAIL timer(20000ms) survived: watchFirstClientBoot is not defined
+FAIL inventory answers: handle is not defined
+```
+
+```bash
+npm run smoke                  # 当前代码：全绿
+npm run smoke -- <文件>        # 跑别的副本，用来复现回归
+```
+
 ## 边界
 
 - 自动分类会把**入口名称**（如「插件市场」「工作区管理」，不含任何会话内容、路径或凭据）发给当前 profile 配置的模型服务商；不想发就别开这个开关，它的结果也可以在面板里随手改。

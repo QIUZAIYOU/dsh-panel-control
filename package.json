@@ -50,6 +50,8 @@
   },
   "scripts": {
     "check": "node --check index.js && node --check client.js && node scripts/host-smoke.mjs",
-    "smoke": "node scripts/host-smoke.mjs"
+    "smoke": "node scripts/host-smoke.mjs",
+    "doctor": "node scripts/profile-doctor.mjs",
+    "enable": "node scripts/enable-local.mjs"
   }
 }
