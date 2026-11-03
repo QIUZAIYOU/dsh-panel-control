@@ -15,9 +15,33 @@
  * is one short generation (a few hundred output tokens at most).
  */
 
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 const PACKAGE = 'dsh-panel-control';
 const ENDPOINT = 'dsh-panel-control/classify';
 const ROUTE_PATH = `/api/${ENDPOINT}`;
+
+/**
+ * Where the Client's settings live.
+ *
+ * `localStorage` is not good enough for this: the renderer's origin is the
+ * Host's loopback address, and its port changes between app launches, so every
+ * restart lands on a fresh, empty storage area and the sidebar silently falls
+ * back to registration order. A file under the profile's data directory
+ * survives restarts, upgrades and origin changes alike.
+ */
+const STATE_DIR = path.join(os.homedir(), '.dsh', 'panel-control');
+const PREFS_FILE = path.join(STATE_DIR, 'prefs.json');
+const HOST_LOG = path.join(STATE_DIR, 'host.log');
+const CLIENT_LOG = path.join(STATE_DIR, 'client.log');
+const MAX_PREFS_BYTES = 256 * 1024;
+const LOG_KEEP_BYTES = 256 * 1024;
+
+/** Identifies one Host process, so a log spanning several launches shows which
+ * apply/mount lines belong together. */
+const BOOT = Math.random().toString(36).slice(2, 8);
 
 /** Route limits: this endpoint spends model tokens, so only local callers and
  * only a small body are accepted. */
@@ -79,6 +103,57 @@ function describeError(error) {
   } catch {
     return String(error);
   }
+}
+
+/* --------------------------------------------------------------- local state */
+
+async function ensureStateDir() {
+  await fs.mkdir(STATE_DIR, { recursive: true });
+}
+
+async function appendLine(file, line) {
+  try {
+    await ensureStateDir();
+    await fs.appendFile(file, `${new Date().toISOString()} [${BOOT}] ${line}\n`, 'utf8');
+    const stat = await fs.stat(file);
+    if (stat.size > LOG_KEEP_BYTES) {
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.slice(-Math.floor(LOG_KEEP_BYTES / 2)), 'utf8');
+    }
+  } catch {
+    /* Logging is a convenience: it must never break a request. */
+  }
+}
+
+const logHost = (line) => {
+  void appendLine(HOST_LOG, line);
+};
+
+const logClient = (line) => {
+  void appendLine(CLIENT_LOG, line);
+};
+
+async function readPrefsFile() {
+  try {
+    const text = await fs.readFile(PREFS_FILE, 'utf8');
+    const parsed = JSON.parse(text);
+    return isRecord(parsed) ? parsed : null;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    await logHost(`prefs read failed: ${describeError(error)}`);
+    return null;
+  }
+}
+
+async function writePrefsFile(prefs) {
+  if (!isRecord(prefs)) throw new Error('preferences must be an object');
+  const text = JSON.stringify(prefs);
+  if (text.length > MAX_PREFS_BYTES) throw new Error('preferences are too large');
+  await ensureStateDir();
+  const temporary = `${PREFS_FILE}.tmp`;
+  await fs.writeFile(temporary, text, 'utf8');
+  await fs.rename(temporary, PREFS_FILE);
+  return text.length;
 }
 
 /* ------------------------------------------------------------------- prompt */
@@ -260,8 +335,12 @@ async function classify(scope, payload, signal) {
   try {
     const answer = await complete(scope, buildPrompt(draft), mergedSignal());
     const parsed = sanitizeAnswer(extractJson(answer.text), draft);
-    if (!parsed) return refusal('unparsable-answer', 'The model did not answer with usable JSON.');
+    if (!parsed) {
+      logHost(`classify: unusable answer (${answer.seen}, ${answer.text.length} chars)`);
+      return refusal('unparsable-answer', 'The model did not answer with usable JSON.');
+    }
     const filed = new Set(parsed.groups.flatMap((group) => group.ids));
+    logHost(`classify: ${parsed.groups.length} groups over ${filed.size}/${entries.length} entries (${answer.model})`);
     return {
       ok: true,
       value: {
@@ -307,15 +386,36 @@ async function handle(scope, request) {
     return reply(rpcId, refusal('gateway/bad-request', 'This is not a panel-control request.'));
   }
   const call = message.payload;
-  if (call.method !== 'classify') {
-    return reply(rpcId, refusal('unknown-method', `Unknown method: ${String(call.method)}`));
-  }
+  const method = typeof call.method === 'string' ? call.method : '';
 
   try {
-    return reply(rpcId, await classify(scope, call.payload, request.signal));
+    if (method === 'classify') return reply(rpcId, await classify(scope, call.payload, request.signal));
+    if (method === 'load') return reply(rpcId, await loadPreferences());
+    if (method === 'save') return reply(rpcId, await savePreferences(call.payload));
+    if (method === 'report') {
+      const detail = isRecord(call.payload) ? call.payload : {};
+      const text = JSON.stringify(detail).slice(0, 4_000);
+      logClient(`${typeof detail.kind === 'string' ? detail.kind : 'report'} ${text}`);
+      return reply(rpcId, { ok: true, value: { logged: true } });
+    }
+    return reply(rpcId, refusal('unknown-method', `Unknown method: ${String(call.method)}`));
   } catch (error) {
+    logHost(`request ${method || '?'} failed: ${describeError(error)}`);
     return reply(rpcId, refusal('handler-failed', describeError(error)));
   }
+}
+
+async function loadPreferences() {
+  const prefs = await readPrefsFile();
+  return { ok: true, value: { prefs, file: PREFS_FILE } };
+}
+
+async function savePreferences(payload) {
+  if (!isRecord(payload) || !isRecord(payload.prefs)) {
+    return refusal('bad-request', 'A preferences object is required.');
+  }
+  const bytes = await writePrefsFile(payload.prefs);
+  return { ok: true, value: { saved: true, bytes } };
 }
 
 /** Register the route; returns null while `connection` is not available yet so
@@ -335,15 +435,24 @@ export function apply(ctx) {
   let disposed = false;
   let dispose = null;
   let retry = null;
+  let attempts = 0;
+
+  logHost('apply: host half starting');
 
   const attach = (scope) => {
     if (disposed || dispose) return;
+    attempts += 1;
     try {
       dispose = mount(scope);
     } catch (error) {
       console.error(`[${PACKAGE}] failed to register ${ROUTE_PATH}`, error);
+      logHost(`mount failed: ${describeError(error)}`);
     }
-    if (!dispose && !disposed) retry = setTimeout(() => attach(scope), 1000);
+    if (dispose) {
+      logHost(`route mounted at ${ROUTE_PATH} (attempt ${attempts})`);
+      return;
+    }
+    if (!disposed) retry = setTimeout(() => attach(scope), 1000);
   };
 
   try {
