@@ -54,8 +54,6 @@ function build(require) {
     sortByName: { zh: '按名称排序', en: 'Sort by name' },
     reset: { zh: '恢复默认', en: 'Reset' },
     showAll: { zh: '全部显示', en: 'Show all' },
-    moveUp: { zh: '上移', en: 'Move up' },
-    moveDown: { zh: '下移', en: 'Move down' },
     hideIt: { zh: '隐藏', en: 'Hide' },
     showIt: { zh: '显示', en: 'Show' },
     hiddenChip: { zh: '已隐藏', en: 'hidden' },
@@ -73,8 +71,8 @@ function build(require) {
     deleteGroup: { zh: '删除分组', en: 'Delete group' },
     countFmt: { zh: '{n} 个入口 · {h} 个已隐藏', en: '{n} entries · {h} hidden' },
     hint: {
-      zh: '拖行首的把手排序，也可以用行右侧的箭头逐格移动；隐藏的入口仍留在列表里。',
-      en: 'Drag a row to reorder it, or use the arrows on the right to move it one step. A hidden entry stays in this list and can come back at any time.',
+      zh: '拖行首的把手排序；隐藏的入口仍留在列表里，随时可以放回来。',
+      en: 'Drag the handle at the start of a row to reorder it; a hidden entry stays in this list and can come back at any time.',
     },
     dragHint: { zh: '拖动排序', en: 'Drag to reorder' },
     locked: { zh: '固定显示', en: 'always shown' },
@@ -96,7 +94,6 @@ function build(require) {
     diagFile: { zh: '设置文件', en: 'settings file' },
     diagOrigin: { zh: '页面来源', en: 'page origin' },
     openPanel: { zh: '打开面板管理', en: 'Open panel manager' },
-    resetDone: { zh: '已恢复默认顺序与可见性。', en: 'Order and visibility were reset.' },
     autoTitle: { zh: '自动分类', en: 'Auto classify' },
     autoHint: {
       zh: '让默认模型把入口分成 2–4 组，结果保存在本机。',
@@ -738,15 +735,6 @@ function build(require) {
   const prefsNow = () => store.state.prefs;
   const orderNow = () => normalize(prefsNow(), store.state.entries);
 
-  function moveBy(id, delta) {
-    const order = orderNow().slice();
-    const from = order.indexOf(id);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= order.length) return;
-    order.splice(to, 0, order.splice(from, 1)[0]);
-    commit({ ...prefsNow(), order });
-  }
-
   // Move fromId in front of targetId. Shared by the entry list and the group
   // list so both sections reorder by exactly the same rule.
   function reorderList(list, fromId, targetId) {
@@ -810,15 +798,6 @@ function build(require) {
     const groups = (prefsNow().groups || []).map((group) =>
       group.id === groupId ? { id: group.id, name: name === '' ? '—' : name } : group,
     );
-    commit({ ...prefsNow(), groups });
-  }
-
-  function moveGroup(groupId, delta) {
-    const groups = (prefsNow().groups || []).slice();
-    const from = groups.findIndex((group) => group.id === groupId);
-    const to = from + delta;
-    if (from < 0 || to < 0 || to >= groups.length) return;
-    groups.splice(to, 0, groups.splice(from, 1)[0]);
     commit({ ...prefsNow(), groups });
   }
 
@@ -1357,8 +1336,6 @@ function build(require) {
               ungrouped: t('ungrouped'),
               onPick: (next) => setGroup(id, next),
             }),
-        iconButton('up', t('moveUp'), () => moveBy(id, -1), position === 0),
-        iconButton('down', t('moveDown'), () => moveBy(id, 1), position === order.length - 1),
         iconButton(
           isHidden ? 'eyeOff' : 'eye',
           locked ? t('lockedHint') : isHidden ? t('showIt') : t('hideIt'),
@@ -1414,8 +1391,6 @@ function build(require) {
           'span',
           { className: 'dpc-groupActions' },
           h('span', { className: 'dpc-count' }, String(members.length)),
-          iconButton('up', t('moveUp'), () => moveGroup(group.id, -1), index === 0),
-          iconButton('down', t('moveDown'), () => moveGroup(group.id, 1), index === groupsOf.length - 1),
           iconButton('close', t('deleteGroup'), () => removeGroup(group.id), false),
         ),
       );

@@ -27,6 +27,8 @@
 
 视觉规范沿用 [unslop](https://github.com/heydamir/unslop)（Damir Sokolovsky，CC BY 4.0）的思路，按 DSH 的 token 体系与页面框架改写；分组下拉是自绘的，因为原生 `<select>` 的选项列表由系统控件绘制，深色主题下会弹出白底白字。
 
+把这套页面做出来时踩到的具体数字与坑（页面框架、单行行高、输入框居中、两套列表的统一重排、热替换时的样式表打架、无 DevTools 的现场验证）整理在 [docs/ui-design-notes.md](docs/ui-design-notes.md)。
+
 ## 安装
 
 ```bash
