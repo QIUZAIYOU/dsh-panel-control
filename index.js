@@ -537,8 +537,33 @@ function logInventoryOnApply(scope) {
       `graph: ${listed ? 'lists' : 'does not list'} ${PACKAGE} · rev ${value.rev} · ` +
         `${value.ids.length} client entr${value.ids.length === 1 ? 'y' : 'ies'}`,
     );
+    if (listed) void probeOwnBundle(scope);
   } catch (error) {
     logHost(`graph: probe failed (${describeError(error)})`);
+  }
+}
+
+/**
+ * Ask the Host to serve this package's own bundle, the way the page would.
+ *
+ * A row can be advertised and still be unservable: the registry answers only
+ * the revisions it read at composition time, and everything else is a 404 that
+ * the page drops without a word. Runs the same request the browser would make.
+ */
+async function probeOwnBundle(scope) {
+  try {
+    const modules = clientModules || serviceOf(scope, 'clientModules');
+    const graph = modules && typeof modules.graph === 'function' ? modules.graph() : null;
+    const entries = graph && Array.isArray(graph.entries) ? graph.entries : [];
+    const entry = entries.find((row) => row && row.id === PACKAGE);
+    if (!entry || typeof entry.url !== 'string' || typeof modules.fetchBundle !== 'function') return;
+    const response = await modules.fetchBundle({ method: 'GET', url: entry.url });
+    logHost(
+      `graph: own bundle at rev ${String(entry.rev)} answers ${response.status}` +
+        (response.status === 200 ? '' : ' — the page cannot load a bundle the Host will not serve'),
+    );
+  } catch (error) {
+    logHost(`graph: own bundle probe failed (${describeError(error)})`);
   }
 }
 
