@@ -418,6 +418,41 @@ async function savePreferences(payload) {
   return { ok: true, value: { saved: true, bytes } };
 }
 
+/**
+ * Say out loud when the page booted without this plugin.
+ *
+ * The Host is up (this half ran), yet the Client half reports nothing back: the
+ * window was built from a plugin list that no longer matches the code on disk,
+ * so its script request went nowhere and the page silently omits the entry. The
+ * user sees a plugin that "does not start", and the logs used to be silent about
+ * it -- so write the diagnosis where it can be found, once per launch.
+ */
+async function watchFirstClientBoot(startedAt) {
+  try {
+    let text = '';
+    try {
+      text = await fs.readFile(CLIENT_LOG, 'utf8');
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+    }
+    const since = startedAt - 4000;
+    const reported = text
+      .split(String.fromCharCode(10))
+      .filter((line) => line.includes('"kind":"boot"'))
+      .some((line) => {
+        const stamp = Date.parse(line.slice(0, line.indexOf(' ')));
+        return Number.isFinite(stamp) && stamp >= since;
+      });
+    if (reported) return;
+    logHost(
+      'client half did not report within 20s: the window likely booted with a plugin list from before this code. ' +
+        'Press the desktop refresh button (or Ctrl+R) once; open a new window afterwards to confirm.',
+    );
+  } catch (error) {
+    logHost(`client boot watchdog failed: ${describeError(error)}`);
+  }
+}
+
 /** Register the route; returns null while `connection` is not available yet so
  * that the caller can retry on a later tick. */
 function mount(scope) {
@@ -450,6 +485,9 @@ export function apply(ctx) {
     }
     if (dispose) {
       logHost(`route mounted at ${ROUTE_PATH} (attempt ${attempts})`);
+      const startedAt = Date.now();
+      const watchdog = setTimeout(() => void watchFirstClientBoot(startedAt), 20_000);
+      if (typeof watchdog.unref === 'function') watchdog.unref();
       return;
     }
     if (!disposed) retry = setTimeout(() => attach(scope), 1000);
