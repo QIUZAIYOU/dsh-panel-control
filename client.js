@@ -40,6 +40,10 @@ function build(require) {
   const ORDER_STEP = 10;
   /** Set right before a reload so the next mount can say "still missing". */
   const RELOAD_MARK = 'dsh.panel-control.reload-at';
+  const NOTICE_SKIP = 'dsh.panel-control.notice-skip';
+  // A reload hint that never expires is a lie: it outlives the mismatch it was
+  // written for. Ten minutes covers a slow restart, not a whole workday.
+  const RELOAD_MARK_TTL = 10 * 60 * 1000;
   /** Where unmanaged rows and the "More" launcher are pushed to. */
   const ORDER_UNMANAGED = 9000;
   /** Below this width the sidebar renders the icon rail, where headings do not fit. */
@@ -76,12 +80,9 @@ function build(require) {
       zh: '这个页面用的插件清单，已经不是最新的了',
       en: 'This page is running an older plugin list',
     },
-    staleBody: {
-      zh: '插件有更新，刷新一次页面即可同步。',
-      en: 'Something changed since this page loaded; one reload syncs it.',
-    },
     missingBody: { zh: '刷新一次就会加载：{names}', en: 'One reload picks up: {names}' },
     refreshPage: { zh: '刷新页面', en: 'Reload the page' },
+    dismiss: { zh: '不再提示', en: 'Dismiss' },
     missingMore: { zh: ' 等 {n} 个', en: ' and {n} more' },
     refreshStillMissing: {
       zh: '刷新后仍然缺：在插件管理里把它关一次再打开。',
@@ -105,6 +106,9 @@ function build(require) {
     diagRows: { zh: 'DOM 行数', en: 'DOM rows' },
     diagMapped: { zh: '已映射', en: 'mapped' },
     diagAt: { zh: '上次应用', en: 'last applied' },
+    diagHostRev: { zh: 'Host 清单版本', en: 'host list rev' },
+    diagBootRev: { zh: '页面清单版本', en: 'page list rev' },
+    diagMissingIds: { zh: '本页缺失', en: 'missing on this page' },
     diagSource: { zh: '入口来源', en: 'entry source' },
     diagNone: { zh: '—', en: '—' },
     diagPrefs: { zh: '设置来源', en: 'settings source' },
@@ -288,7 +292,12 @@ function build(require) {
     // an entry, but it is this one and it is already on screen: nagging the user
     // to reload for it would be noise. Every other gap still counts.
     const selfOnly = missing.length === 1 && missing[0] === PACKAGE && value.recovered === true;
-    const stale = !selfOnly && (missing.length > 0 || rev !== boot.rev);
+    // Only a real gap is worth a banner. A revision that merely differs proves
+    // nothing: the Host rebuilds that graph whenever any plugin file changes, so
+    // comparing revisions nagged people whose page was missing nothing at all.
+    // The two revisions still land in the diagnostics list for the curious.
+    const stale = !selfOnly && missing.length > 0;
+    if (!stale) forgetReloadMark();
     setState({ inventory: { status: 'done', stale, missing, rev, bootRev: boot.rev, at: Date.now() } });
   }
 
@@ -349,7 +358,8 @@ function build(require) {
    */
   function reloadPage() {
     try {
-      window.sessionStorage.setItem(RELOAD_MARK, String(Date.now()));
+      const missing = (store.state.inventory && store.state.inventory.missing) || [];
+      window.sessionStorage.setItem(RELOAD_MARK, JSON.stringify({ at: Date.now(), ids: missing }));
     } catch {
       /* private mode: the mark is a nicety, not a requirement */
     }
@@ -369,12 +379,47 @@ function build(require) {
     }
   }
 
+  /** `{at, ids}` for a reload this page made recently, otherwise null. */
   function readReloadMark() {
     try {
-      const raw = Number(window.sessionStorage.getItem(RELOAD_MARK));
-      return Number.isFinite(raw) && raw > 0 ? raw : 0;
+      const raw = window.sessionStorage.getItem(RELOAD_MARK);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const at = Number(parsed && parsed.at);
+      if (!Number.isFinite(at) || at <= 0) return null;
+      if (Date.now() - at > RELOAD_MARK_TTL) {
+        window.sessionStorage.removeItem(RELOAD_MARK);
+        return null;
+      }
+      return { at, ids: Array.isArray(parsed.ids) ? parsed.ids.map(String) : [] };
     } catch {
-      return 0;
+      return null;
+    }
+  }
+
+  function forgetReloadMark() {
+    try {
+      window.sessionStorage.removeItem(RELOAD_MARK);
+      window.sessionStorage.removeItem(NOTICE_SKIP);
+    } catch {
+      /* private mode: nothing to forget */
+    }
+  }
+
+  /** ids the reader asked this page not to be nagged about. */
+  function readSkip() {
+    try {
+      return window.sessionStorage.getItem(NOTICE_SKIP) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function skipNotice(missing) {
+    try {
+      window.sessionStorage.setItem(NOTICE_SKIP, missing.join(','));
+    } catch {
+      /* private mode: the banner simply stays */
     }
   }
 
@@ -1236,6 +1281,9 @@ function build(require) {
     const engine = engineRef;
     const dragRef = React.useRef(null);
     const [rowDrag, setRowDrag] = React.useState({ from: null, over: null });
+    // Dismissing the banner is a local decision, not a store update: the same
+    // check runs again on focus, and the answer must not pop back up.
+    const [, forceRender] = React.useReducer((n) => n + 1, 0);
     const [groupDrag, setGroupDrag] = React.useState({ from: null, over: null });
 
     React.useEffect(() => {
@@ -1310,30 +1358,50 @@ function build(require) {
     // that fixes it — no other plugin is involved in the check or the reload.
     const inventory = state.inventory || { status: 'idle', stale: false, missing: [] };
     const missing = Array.isArray(inventory.missing) ? inventory.missing : [];
-    const notice = inventory.stale !== true
-      ? null
-      : h(
-          'section',
-          { className: 'dpc-notice', role: 'status' },
-          h(
-            'div',
-            { className: 'dpc-noticeText' },
-            h('p', { className: 'dpc-noticeTitle' }, t('missingTitle')),
+    // The banner answers one question: is something this page should show still
+    // absent? It stays dismissed for the exact same gap, and it says "still
+    // missing" only for a reload this page made moments ago that did not help.
+    const skipped = missing.length > 0 && readSkip() === missing.join(',');
+    const mark = readReloadMark();
+    const stillMissing =
+      !!mark && missing.length > 0 && mark.ids.length > 0 && missing.some((id) => mark.ids.includes(id));
+    const notice =
+      inventory.stale !== true || skipped
+        ? null
+        : h(
+            'section',
+            { className: 'dpc-notice', role: 'status' },
             h(
-              'p',
-              { className: 'dpc-note' },
-              missing.length === 0
-                ? t('staleBody')
-                : fill(t('missingBody'), {
-                    names:
-                      missing.slice(0, 3).join('、') +
-                      (missing.length > 3 ? fill(t('missingMore'), { n: missing.length - 3 }) : ''),
-                  }),
+              'div',
+              { className: 'dpc-noticeText' },
+              h('p', { className: 'dpc-noticeTitle' }, t('missingTitle')),
+              h(
+                'p',
+                { className: 'dpc-note' },
+                fill(t('missingBody'), {
+                  names:
+                    missing.slice(0, 3).join('、') +
+                    (missing.length > 3 ? fill(t('missingMore'), { n: missing.length - 3 }) : ''),
+                }),
+              ),
+              stillMissing ? h('p', { className: 'dpc-note' }, t('refreshStillMissing')) : null,
             ),
-            readReloadMark() > 0 ? h('p', { className: 'dpc-note' }, t('refreshStillMissing')) : null,
-          ),
-          h('button', { type: 'button', className: 'dpc-noticeAction', onClick: reloadPage }, t('refreshPage')),
-        );
+            h('button', { type: 'button', className: 'dpc-noticeAction', onClick: reloadPage }, t('refreshPage')),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dpc-noticeClose',
+                title: t('dismiss'),
+                'aria-label': t('dismiss'),
+                onClick: () => {
+                  skipNotice(missing);
+                  forceRender();
+                },
+              },
+              h(Icon, { name: 'close' }),
+            ),
+          );
 
     const auto = h(
       'section',
@@ -1578,6 +1646,9 @@ function build(require) {
         diagRow(t('diagFile'), (state.diag && state.diag.hostFile) || '—', true),
         diagRow(t('diagOrigin'), (state.diag && state.diag.href) || '—', true),
         diagRow(t('diagAt'), diagnostics && diagnostics.at ? new Date(diagnostics.at).toLocaleTimeString() : t('diagNone'), true),
+        diagRow(t('diagHostRev'), (state.inventory && state.inventory.rev) || '—', true),
+        diagRow(t('diagBootRev'), (state.inventory && state.inventory.bootRev) || '—', true),
+        diagRow(t('diagMissingIds'), (state.inventory && (state.inventory.missing || []).join(', ')) || t('diagNone'), true),
         diagnostics && diagnostics.error ? h('dt', { key: 'et' }, 'error') : null,
         diagnostics && diagnostics.error
           ? h('dd', { key: 'ed', className: 'dpc-error' }, diagnostics.error)
@@ -1645,6 +1716,8 @@ function build(require) {
     .dpc-notice .dpc-note{margin:0}
     .dpc-noticeAction{appearance:none;flex:none;padding:4px 10px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-primary,#ececf1);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
     .dpc-noticeAction:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16))}
+    .dpc-noticeClose{appearance:none;flex:none;display:grid;place-items:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-noticeClose:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#ececf1)}
     .dpc-auto{display:flex;flex-direction:column;gap:8px}
     .dpc-autoMain{display:flex;align-items:center;justify-content:space-between;gap:16px}
     .dpc-autoText{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden}
