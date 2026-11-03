@@ -44,7 +44,20 @@ const LOG_KEEP_BYTES = 256 * 1024;
 const CLIENT_FILE = fileURLToPath(new URL('./client.js', import.meta.url));
 
 /** Set `DPC_NUDGE=off` to keep the Host strictly read-only about its own files. */
-const NUDGE_ENABLED = String(process.env.DPC_NUDGE || '').toLowerCase() !== 'off';
+/**
+ * The nudge is opt-in, and that default is deliberate.
+ *
+ * Rewriting `client.js` makes the loader hot-swap this module into the live
+ * page. That re-evaluation runs the whole slot reconcile again, and a plugin
+ * whose registration is not idempotent then throws on its second
+ * `register({ id: 'workspace-control' })` and loses its sidebar entry: healing
+ * this plugin broke a neighbour's. A page reload fixes the frozen list without
+ * touching anyone else, so the safe path is the banner, and the nudge stays
+ * behind DPC_NUDGE=on for people who need it and accept the risk.
+ */
+const NUDGE_ENABLED = ['on', '1', 'true', 'yes'].includes(
+  String(process.env.DPC_NUDGE || '').trim().toLowerCase(),
+);
 
 /** Set once the nudge below actually rewrote the Client file in this process. */
 let recoveredAt = 0;
@@ -504,6 +517,32 @@ function inventorySnapshot(scope) {
 }
 
 /**
+ * Write one line per apply that answers the only question a cold start leaves
+ * open: did this package even reach the Host's plugin graph?
+ *
+ * The page can only load what the graph advertises, so "missing from the list"
+ * and "listed but never fetched" have completely different fixes. One line,
+ * once per apply, settles it from `host.log` alone.
+ */
+function logInventoryOnApply(scope) {
+  try {
+    const snapshot = inventorySnapshot(scope);
+    if (!snapshot.ok) {
+      logHost(`graph: unreadable (${String(snapshot.error && snapshot.error.message)})`);
+      return;
+    }
+    const value = snapshot.value;
+    const listed = value.ids.includes(PACKAGE);
+    logHost(
+      `graph: ${listed ? 'lists' : 'does not list'} ${PACKAGE} · rev ${value.rev} · ` +
+        `${value.ids.length} client entr${value.ids.length === 1 ? 'y' : 'ies'}`,
+    );
+  } catch (error) {
+    logHost(`graph: probe failed (${describeError(error)})`);
+  }
+}
+
+/**
  * Say it out loud when the page never came back.
  *
  * The Host is up (this half ran) and yet the Client half reports nothing: the
@@ -545,17 +584,33 @@ async function watchFirstClientBoot(startedAt) {
     // while developing) must not be reported as "the window never got the code".
     if (newest >= startedAt - 120_000) return;
     logHost(
-      'client half did not report within 12s: the window is running a plugin list from before this code.',
+      'client half did not report within 30s: the window is running a plugin list from before this code ' +
+        '(a rebuilt interface can take this long to finish loading; press the refresh button if the entry is missing)',
     );
     // The page will not ask for a script that is not in its frozen list, but it
     // does watch this package's files: one byte-level change to the Client entry
     // makes the loader hand the module to the live page. Flip the trailing
     // newline, so the file stays byte-stable instead of growing on every launch.
     if (!NUDGE_ENABLED) {
-      logHost('recovery nudge disabled by DPC_NUDGE=off; the entry stays hidden until the page reloads');
+      logHost('recovery nudge stayed off (opt in with DPC_NUDGE=on); a page reload is the safe fix');
       return;
     }
     try {
+      // The page may have reported while this timer was waiting: never rewrite a
+      // file the running page just loaded, because the resulting hot swap is
+      // what re-runs everybody's registration.
+      const late = await fs.readFile(CLIENT_LOG, 'utf8').catch(() => '');
+      const quiet = late
+        .split(String.fromCharCode(10))
+        .some((line) => {
+          if (!line.includes('"kind":"boot"')) return false;
+          const stamp = Date.parse(line.slice(0, line.indexOf(' ')));
+          return Number.isFinite(stamp) && stamp >= since;
+        });
+      if (quiet) {
+        logHost('recovery nudge skipped: the page reported while the watchdog was waiting');
+        return;
+      }
       const source = await fs.readFile(CLIENT_FILE, 'utf8');
       const next = source.endsWith(NL + NL) ? source.slice(0, -1) : source + NL;
       await fs.writeFile(CLIENT_FILE, next, 'utf8');
@@ -607,6 +662,7 @@ export function apply(ctx) {
     }
     if (dispose) {
       logHost(`route mounted at ${ROUTE_PATH} (attempt ${attempts})`);
+      logInventoryOnApply(scope);
       const startedAt = Date.now();
       // A timer callback that throws is fatal for the Host: contain it here and
       // again inside the async body.
@@ -614,7 +670,7 @@ export function apply(ctx) {
         void watchFirstClientBoot(startedAt).catch((error) =>
           logHost(`client boot watchdog failed: ${describeError(error)}`),
         );
-      }, 12_000);
+      }, 30_000);
       if (typeof watchdog.unref === 'function') watchdog.unref();
       return;
     }
