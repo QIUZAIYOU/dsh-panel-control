@@ -41,6 +41,16 @@ function build(require) {
   /** Set right before a reload so the next mount can say "still missing". */
   const RELOAD_MARK = 'dsh.panel-control.reload-at';
   const NOTICE_SKIP = 'dsh.panel-control.notice-skip';
+  /**
+   * The gap this page already told the reader about.
+   *
+   * A page reload does not always fix the gap: when the app hands every page the
+   * list it froze at launch, the same plugin stays absent until DSH itself
+   * restarts, and a banner that reappears on every load is then pure noise. The
+   * set is therefore remembered across loads (a reload keeps `localStorage`),
+   * shown once, and afterwards reported only in the diagnostics list.
+   */
+  const NOTICE_NAGGED = 'dsh.panel-control.notice-nagged';
   // A reload hint that never expires is a lie: it outlives the mismatch it was
   // written for. Ten minutes covers a slow restart, not a whole workday.
   const RELOAD_MARK_TTL = 10 * 60 * 1000;
@@ -89,9 +99,12 @@ function build(require) {
     dismiss: { zh: '不再提示', en: 'Dismiss' },
     missingMore: { zh: ' 等 {n} 个', en: ' and {n} more' },
     refreshStillMissing: {
-      zh: '刷新后仍然缺：在插件管理里把它关一次再打开。',
-      en: 'Still missing after a reload: turn it off and on in Plugins once.',
+      zh: '刷新后仍然缺：重启 DSH 才会应用新的插件清单。',
+      en: 'Still missing after a reload: restart DSH to apply the new plugin list.',
     },
+    diagMissingStuck: { zh: '已提示过', en: 'already reported' },
+    diagYes: { zh: '是', en: 'yes' },
+    diagNo: { zh: '否', en: 'no' },
     hint: {
       zh: '拖行首的把手排序；隐藏的入口仍留在列表里，随时可以放回来。',
       en: 'Drag the handle at the start of a row to reorder it; a hidden entry stays in this list and can come back at any time.',
@@ -336,9 +349,17 @@ function build(require) {
     // nothing: the Host rebuilds that graph whenever any plugin file changes, so
     // comparing revisions nagged people whose page was missing nothing at all.
     // The two revisions still land in the diagnostics list for the curious.
-    const stale = !selfOnly && missing.length > 0;
+    const gap = missing.join(',');
+    // Already said on an earlier load and a reload did not help: keep quiet, the
+    // diagnostics still list it.
+    const repeated = gap.length > 0 && readNagged() === gap;
+    const stale = !selfOnly && missing.length > 0 && !repeated;
+    if (stale) rememberNagged(gap);
+    else if (!missing.length) rememberNagged('');
     if (!stale) forgetReloadMark();
-    setState({ inventory: { status: 'done', stale, missing, rev, bootRev: boot.rev, at: Date.now() } });
+    setState({
+      inventory: { status: 'done', stale, repeated, missing, rev, bootRev: boot.rev, at: Date.now() },
+    });
   }
 
   /**
@@ -460,6 +481,24 @@ function build(require) {
       window.sessionStorage.setItem(NOTICE_SKIP, missing.join(','));
     } catch {
       /* private mode: the banner simply stays */
+    }
+  }
+
+  /** The gap this profile was nagged about on an earlier page load. */
+  function readNagged() {
+    try {
+      return window.localStorage.getItem(NOTICE_NAGGED) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function rememberNagged(ids) {
+    try {
+      if (ids) window.localStorage.setItem(NOTICE_NAGGED, ids);
+      else window.localStorage.removeItem(NOTICE_NAGGED);
+    } catch {
+      /* private mode: the banner comes back, which is acceptable */
     }
   }
 
@@ -1733,6 +1772,11 @@ function build(require) {
         diagRow(t('diagHostRev'), (state.inventory && state.inventory.rev) || '—', true),
         diagRow(t('diagBootRev'), (state.inventory && state.inventory.bootRev) || '—', true),
         diagRow(t('diagMissingIds'), (state.inventory && (state.inventory.missing || []).join(', ')) || t('diagNone'), true),
+        diagRow(
+          t('diagMissingStuck'),
+          state.inventory && state.inventory.repeated ? t('diagYes') : t('diagNo'),
+          true,
+        ),
         diagnostics && diagnostics.error ? h('dt', { key: 'et' }, 'error') : null,
         diagnostics && diagnostics.error
           ? h('dd', { key: 'ed', className: 'dpc-error' }, diagnostics.error)
