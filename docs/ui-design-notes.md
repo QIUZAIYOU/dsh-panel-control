@@ -81,3 +81,17 @@ for (const stale of document.querySelectorAll('style[data-dpc-style]')) stale.re
 - 点击：坐标 = `GetWindowRect().L + x`，窗口位置会变，**每次点之前重新截图定位**；小控件的命中点要用 4× 放大图确认，别靠猜。
 - 输入：HTML5 拖拽用 `mouse_event` 按下 → 分十几步移动（每步 ~90ms）→ 抬起，一次性瞬移不会触发 `dragover`。
 - 逻辑：两个零依赖的静态 harness 最省时间——`engine.html` 用假 DOM 驱动纯逻辑，`apply.html` 用假 Cordis 上下文调真实 `apply(ctx)` 并断言注册项；上一版的 `ReferenceError`（`applyInner is not defined`）就是后者抓出来的。
+
+## 10. 同一块内容出现在两处：给组件做「变体」，不要复制
+
+面板管理既在侧栏导航的独立页面里，也在设置弹窗的分节里。第二处一开始写成"一张卡 + 一个按钮，点它去第一处"——这是把用户当邮差：他走到设置里就是要办这件事，再让他跳走只是把两步并成三步。
+
+做法是同一个组件加一个 `variant`：
+
+- `variant="page"`：自带页面框架（滚动、`28px` 起头、960px 内容列、入场动画）。
+- `variant="section"`：把框架全部让给宿主（`height:auto`、`overflow:visible`、`padding:0`、去掉动画），只保留内容本身的间距。
+- 标题这类宿主已经画过的东西用 CSS 隐掉（`.dpc-head--section .dpc-title{display:none}`），而不是在 JS 里分叉出第二棵组件树——分叉出去的两棵树迟早会长成两个界面。
+
+窄列（设置弹窗 ~560px）要单独收：容器查询比媒体查询合适，因为它量的是内容列而不是窗口。这里在 640px 以下依次丢掉提示行、序号、注册 id、标签，先丢"可有可无"，最后才动名称——**永远先丢副信息，不要压缩主信息**。
+
+顺带一条：`field-sizing:content` 的输入框要有 `min-width`（这里 2ch）和左右 `padding`，否则文字会贴边、看起来像被裁掉。

@@ -110,7 +110,6 @@ function build(require) {
     diagPrefs: { zh: '设置来源', en: 'settings source' },
     diagFile: { zh: '设置文件', en: 'settings file' },
     diagOrigin: { zh: '页面来源', en: 'page origin' },
-    openPanel: { zh: '打开面板管理', en: 'Open panel manager' },
     autoTitle: { zh: '自动分类', en: 'Auto classify' },
     autoHint: {
       zh: '让默认模型把入口分成 2–4 组，结果保存在本机。',
@@ -1227,7 +1226,10 @@ function build(require) {
     );
   }
 
-  function PanelManager() {
+  function PanelManager(props) {
+    // The same body serves the main panel and the settings section: the section
+    // is already inside a framed column, so it opts out of the page frame.
+    const inSection = !!(props && props.variant === 'section');
     const state = useStore();
     const prefs = state.prefs;
     const entries = state.entries;
@@ -1271,7 +1273,7 @@ function build(require) {
 
     const head = h(
       'header',
-      { className: 'dpc-head' },
+      { className: inSection ? 'dpc-head dpc-head--section' : 'dpc-head' },
       h(
         'div',
         { className: 'dpc-headLine' },
@@ -1585,10 +1587,10 @@ function build(require) {
 
     return h(
       'div',
-      { className: 'dpc-root' },
+      { className: inSection ? 'dpc-root dpc-root--flush' : 'dpc-root' },
       h(
         'div',
-        { className: 'dpc-page' },
+        { className: inSection ? 'dpc-page dpc-page--flush' : 'dpc-page' },
         head,
         notice,
         auto,
@@ -1606,29 +1608,10 @@ function build(require) {
     );
   }
 
-  function SettingsEntry(props) {
-    const close = props && typeof props.close === 'function' ? props.close : null;
-    const open = () => {
-      try {
-        if (ctxRef && ctxRef.layout && typeof ctxRef.layout.selectPanel === 'function') {
-          ctxRef.layout.selectPanel(PANEL_KEY);
-        }
-      } catch {
-        /* the sidebar row is the other door */
-      }
-      if (close) close();
-    };
-    return h(
-      'div',
-      { className: 'dpc-settings' },
-      h(
-        'div',
-        { className: 'dpc-settingsText' },
-        h('div', { className: 'dpc-settingsTitle' }, t('panelTitle')),
-        h('p', { className: 'dpc-settingsDesc' }, t('subtitle')),
-      ),
-      h('button', { type: 'button', className: 'dpc-primary', onClick: open }, t('openPanel')),
-    );
+  // Settings shows the manager itself. Sending the reader to another screen to
+  // do the work they came here for is a detour nobody asked for.
+  function SettingsEntry() {
+    return h('div', { className: 'dpc-settingsBody' }, h(PanelManager, { variant: 'section' }));
   }
 
   /* ------------------------------------------------------------------ css */
@@ -1665,6 +1648,7 @@ function build(require) {
     .dpc-auto{display:flex;flex-direction:column;gap:8px}
     .dpc-autoMain{display:flex;align-items:center;justify-content:space-between;gap:16px}
     .dpc-autoText{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden}
+    .dpc-autoText .dpc-cardTitle{flex:none;white-space:nowrap}
     .dpc-inlineNote{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dpc-autoActions{display:flex;flex:none;align-items:center;gap:8px}
     .dpc-status{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
@@ -1737,10 +1721,12 @@ function build(require) {
     .dpc-mono{font-family:var(--dsw-font-family-code,ui-monospace,monospace)}
     .dpc-error{color:var(--dsw-alias-state-error-primary,#b45454)}
 
-    .dpc-settings{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0}
-    .dpc-settingsText{min-width:0}
-    .dpc-settingsTitle{font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
-    .dpc-settingsDesc{margin:4px 0 0;max-width:62ch;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    /* Settings section: no page frame, no scroller — the dialog owns both. */
+    .dpc-root--flush{height:auto;overflow:visible;padding:0}
+    .dpc-page--flush{padding-left:0;padding-right:0;gap:16px;animation:none}
+    .dpc-head--section .dpc-title{display:none}
+    .dpc-head--section .dpc-headLine{justify-content:flex-end}
+    .dpc-settingsBody{min-width:0}
     .dpc-primary{appearance:none;flex:none;border:0;padding:4px 12px;border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-button-primary-fill,#5865f2);color:var(--dsw-alias-label-primary-inverted,#8a8a8a);font:inherit;font-size:12px;font-weight:500;line-height:20px;cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-primary:hover{background:var(--dsw-alias-button-primary-hover,#4a56d8)}
     .dpc-ghost{appearance:none;flex:none;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));padding:3px 10px;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:20px;cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
@@ -1752,6 +1738,14 @@ function build(require) {
       .dpc-rowText{flex:1 1 120px}
       .dpc-tags{order:8}
       .dpc-page{padding-left:16px;padding-right:16px}
+    }
+    /* The settings column is narrower than the page column: drop what is only
+       nice-to-have there instead of letting the row overflow. */
+    @container (max-width:640px){
+      .dpc-hint{display:none}
+      .dpc-pos{display:none}
+      .dpc-key{display:none}
+      .dpc-tags{display:none}
     }
     @media (prefers-reduced-motion:reduce){
       .dpc-page{animation:none}
@@ -1889,3 +1883,4 @@ window.__ModuleLoader__.load({
     }
   },
 });
+
