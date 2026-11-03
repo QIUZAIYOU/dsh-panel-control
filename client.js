@@ -48,6 +48,10 @@ function build(require) {
   const ORDER_UNMANAGED = 9000;
   /** Below this width the sidebar renders the icon rail, where headings do not fit. */
   const WIDE_MIN_WIDTH = 64;
+  const ORDER_UNMANAGED_TAIL = ORDER_UNMANAGED - 500;
+  const SAVE_DEBOUNCE_MS = 300;
+  const AUTO_DELAY_MS = 1500;
+  const AUTO_RETRY_MS = 60000;
 
   /* ------------------------------------------------------------------ text */
 
@@ -124,6 +128,9 @@ function build(require) {
     autoDone: { zh: '模型已分成 {n} 组（{m}）。', en: 'The model filed them into {n} groups ({m}).' },
     autoFiledNew: { zh: '已把 {n} 个新入口归入分组（{m}）。', en: 'Filed {n} new entries ({m}).' },
     autoFailed: { zh: '分类失败：{m}', en: 'Classification failed: {m}' },
+    autoTimeout: { zh: '模型这次超时了，稍后再试一次。', en: 'The model timed out; try again in a moment.' },
+    autoModelFailed: { zh: '模型调用失败，稍后再试一次。', en: 'The model call failed; try again in a moment.' },
+    autoUnparsable: { zh: '模型这次的回答不能用，再试一次。', en: 'The model answered with something unusable; try again.' },
     autoUnavailable: {
       zh: '这一版客户端拿不到宿主的连接服务，无法调用模型。',
       en: 'This Client build does not expose the Host connection, so the model cannot be called.',
@@ -180,7 +187,9 @@ function build(require) {
 
   function flatten(language) {
     const dictionary = {};
-    for (const [key, value] of Object.entries(TEXT)) dictionary[key] = value[language];
+    // A key that has not been translated yet falls back rather than rendering
+    // "undefined" into a label.
+    for (const [key, value] of Object.entries(TEXT)) dictionary[key] = value[language] || value.en || value.zh;
     return dictionary;
   }
 
@@ -196,30 +205,56 @@ function build(require) {
     autoFiled: [],
   });
 
+  /**
+   * What a stored file may contain.
+   *
+   * The Host accepts a 256KB file, which is enough for thousands of sections and
+   * hundreds of thousands of assignments if nothing trims them; every apply
+   * would then build that many separators. The numbers here are far above any
+   * real sidebar and turn a hostile or corrupted store into a cheap no-op.
+   */
+  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, groups: 24, assign: 400, name: 40, key: 120 };
+
+  /** Dedupe, drop anything that is not a usable id, and stop at `cap`. */
+  function uniqueIds(raw, cap) {
+    const out = [];
+    if (!Array.isArray(raw)) return out;
+    const seen = new Set();
+    for (const id of raw) {
+      if (typeof id !== 'string' || id === '' || id.length > LIMITS.key || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+      if (out.length >= cap) break;
+    }
+    return out;
+  }
+
   /** Keep only the shapes this plugin writes, so a hand-edited store cannot crash it. */
   function sanitize(raw) {
     const out = emptyPrefs();
     if (!raw || typeof raw !== 'object') return out;
-    if (Array.isArray(raw.order)) {
-      for (const id of raw.order) if (typeof id === 'string' && id !== '') out.order.push(id);
-    }
-    if (Array.isArray(raw.autoFiled)) {
-      for (const id of raw.autoFiled) if (typeof id === 'string' && id !== '') out.autoFiled.push(id);
-    }
-    if (Array.isArray(raw.hidden)) {
-      for (const id of raw.hidden) if (typeof id === 'string' && id !== '') out.hidden.push(id);
-    }
+    out.order = uniqueIds(raw.order, LIMITS.order);
+    out.autoFiled = uniqueIds(raw.autoFiled, LIMITS.autoFiled);
+    out.hidden = uniqueIds(raw.hidden, LIMITS.hidden);
     if (Array.isArray(raw.groups)) {
+      const seen = new Set();
       for (const group of raw.groups) {
-        if (!group || typeof group.id !== 'string' || group.id === '') continue;
-        const name = typeof group.name === 'string' ? group.name.trim().slice(0, 40) : '';
+        if (out.groups.length >= LIMITS.groups) break;
+        if (!group || typeof group.id !== 'string' || group.id === '' || group.id.length > LIMITS.key) continue;
+        if (seen.has(group.id)) continue;
+        seen.add(group.id);
+        const name = typeof group.name === 'string' ? group.name.trim().slice(0, LIMITS.name) : '';
         out.groups.push({ id: group.id, name: name || '—' });
       }
     }
     if (raw.assign && typeof raw.assign === 'object') {
+      let kept = 0;
       for (const [panelId, groupId] of Object.entries(raw.assign)) {
-        if (typeof panelId !== 'string' || typeof groupId !== 'string' || groupId === '') continue;
+        if (kept >= LIMITS.assign) break;
+        if (typeof panelId !== 'string' || panelId === '' || panelId.length > LIMITS.key) continue;
+        if (typeof groupId !== 'string' || groupId === '' || groupId.length > LIMITS.key) continue;
         out.assign[panelId] = groupId;
+        kept += 1;
       }
     }
     out.auto = raw.auto === true;
@@ -273,7 +308,12 @@ function build(require) {
    * plugins. The Host exposes its current revision; comparing it costs one call
    * and needs nothing from any other plugin.
    */
+  let inventoryAt = 0;
+
   async function checkInventory() {
+    // Called on load and on every window focus: keep it cheap.
+    if (inventoryAt > 0 && Date.now() - inventoryAt < 5000) return;
+    inventoryAt = Date.now();
     const boot = bootSnapshot();
     if (!boot) {
       setState({ inventory: { status: 'unsupported', stale: false, missing: [], at: Date.now() } });
@@ -318,7 +358,7 @@ function build(require) {
     saveTimer = setTimeout(() => {
       saveTimer = null;
       void hostCall('save', { prefs: store.state.prefs });
-    }, 300);
+    }, SAVE_DEBOUNCE_MS);
   }
 
   function reportHost(detail) {
@@ -547,14 +587,68 @@ function build(require) {
    * enough to run on every sidebar re-render, and it is a no-op when nothing
    * about the plan changed.
    */
+  /**
+   * Entry -> row button.
+   *
+   * A row button carries no id of its own, so the accessible label is the only
+   * real key. Position alone is not safe: as soon as a plugin inserts a row, or
+   * one row disappears (disabled, filtered, still loading), every position after
+   * it shifts by one and a positional fallback would hand row N to entry N+1 --
+   * hiding the wrong row. So: match by unique label first, and only fall back to
+   * position when the two leftover lists agree label for label. Anything still
+   * unmatched is left unmanaged rather than guessed at.
+   */
+  function mapButtons(entries, buttons) {
+    const map = new Map();
+    const used = new Set();
+    const byLabel = new Map();
+    for (const button of buttons) {
+      const label = button.getAttribute('aria-label') || '';
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(button);
+    }
+    const loose = [];
+    for (const entry of entries) {
+      const hit = (byLabel.get(entry.label) || []).find((button) => !used.has(button));
+      if (hit) {
+        map.set(entry.id, hit);
+        used.add(hit);
+      } else {
+        loose.push(entry);
+      }
+    }
+    const rest = buttons.filter((button) => !used.has(button));
+    if (loose.length > 0 && loose.length === rest.length) {
+      // Labels that agree prove the two lists are the same list; a button with no
+      // label at all is no evidence either way, so it may be filled positionally.
+      const sameOrder = loose.every((entry, index) => {
+        const label = rest[index].getAttribute('aria-label') || '';
+        return label === '' || label === entry.label;
+      });
+      // A build that labels rows in wording this plugin never sees ("IM 机器人"
+      // vs "IM机器人") matches nothing at all; that is not a shifted list, it is
+      // a naming difference, and refusing here would manage no row at all.
+      const nothingMatched = map.size === 0;
+      if (sameOrder || nothingMatched) {
+        loose.forEach((entry, index) => {
+          map.set(entry.id, rest[index]);
+          used.add(rest[index]);
+        });
+      }
+    }
+    return map;
+  }
+
   function createEngine(ctx) {
     let scheduled = false;
     let destroyed = false;
     let observer = null;
     let observing = false;
     let listEl = null;
+    let observed = null;
     let signature = '';
     let pollTimer = null;
+    let lastApplyAt = 0;
 
     const diag = { found: false, rows: 0, mapped: 0, at: 0, listClass: '', error: null };
 
@@ -620,45 +714,6 @@ function build(require) {
       return null;
     };
 
-    /**
-     * Entry -> row button.
-     *
-     * Position is the primary key because both lists are sorted the same way and
-     * a row button carries no id of its own; the accessible label is checked
-     * first and used to repair a shifted position.
-     */
-    const mapButtons = (entries, buttons) => {
-      const map = new Map();
-      const used = new Set();
-      const byLabel = new Map();
-      for (const button of buttons) {
-        const label = button.getAttribute('aria-label') || '';
-        if (!byLabel.has(label)) byLabel.set(label, []);
-        byLabel.get(label).push(button);
-      }
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index];
-        const candidate = buttons[index];
-        if (candidate && !used.has(candidate) && (candidate.getAttribute('aria-label') || '') === entry.label) {
-          map.set(entry.id, candidate);
-          used.add(candidate);
-          continue;
-        }
-        const pool = byLabel.get(entry.label) || [];
-        const hit = pool.find((button) => !used.has(button));
-        if (hit) {
-          map.set(entry.id, hit);
-          used.add(hit);
-          continue;
-        }
-        if (candidate && !used.has(candidate)) {
-          map.set(entry.id, candidate);
-          used.add(candidate);
-        }
-      }
-      return map;
-    };
-
     const makeSeparator = (name, order) => {
       const element = document.createElement('div');
       element.className = 'dpc-sep';
@@ -680,13 +735,18 @@ function build(require) {
 
     const resume = () => {
       if (!observer || destroyed || observing) return;
+      // Watch the list itself once it is known. Watching `document.body` means
+      // every chunk of a streaming reply schedules a full re-plan, and the plan
+      // costs a slot read plus a query over every sidebar row.
+      const target = listEl && listEl.isConnected ? listEl : document.body;
       try {
-        observer.observe(document.body, {
+        observer.observe(target, {
           childList: true,
           subtree: true,
           attributes: true,
           attributeFilter: ['class', 'style'],
         });
+        observed = target;
         observing = true;
       } catch {
         /* observing is an optimisation, not a requirement */
@@ -699,6 +759,8 @@ function build(require) {
       if (!sameEntries(store.state.entries, plan.entries)) setState({ entries: plan.entries });
       const list = findList(plan.entries);
       diag.found = Boolean(list);
+      // A different list (the sidebar remounted) needs a new observation target.
+      if (list && observed !== list) pause();
       if (!list) {
         diag.rows = 0;
         diag.mapped = 0;
@@ -766,7 +828,7 @@ function build(require) {
         // A row we could not map is left in place, but kept after every managed row.
         for (const button of buttons) {
           if (managed.has(button)) continue;
-          button.style.order = '8500';
+          button.style.order = String(ORDER_UNMANAGED_TAIL);
         }
 
         diag.rows = buttons.length;
@@ -780,14 +842,20 @@ function build(require) {
       }
     };
 
+    const APPLY_MIN_GAP = 100;
     const schedule = () => {
       if (scheduled || destroyed) return;
       scheduled = true;
       const run = () => {
         scheduled = false;
         apply();
+        lastApplyAt = Date.now();
       };
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+      // Coalesce bursts: a streaming reply fires mutations faster than the plan
+      // can run, and nothing in the sidebar changes between two frames anyway.
+      const wait = Math.max(0, APPLY_MIN_GAP - (Date.now() - lastApplyAt));
+      if (wait > 0) setTimeout(run, wait);
+      else if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
       else setTimeout(run, 16);
     };
 
@@ -821,6 +889,7 @@ function build(require) {
       destroyed = true;
       pause();
       observer = null;
+      observed = null;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
@@ -845,7 +914,11 @@ function build(require) {
 
   /* --------------------------------------------------------------- actions */
 
+  /** Bumped by every user-visible edit; used to drop stale Host snapshots. */
+  let commitRevision = 0;
+
   function commit(nextPrefs) {
+    commitRevision += 1;
     const safe = sanitize(nextPrefs);
     store.state = { ...store.state, prefs: safe };
     writeLocalPrefs(safe);
@@ -860,7 +933,12 @@ function build(require) {
 
   /** Pull the Host copy of the settings over the browser cache. */
   async function hydratePrefs() {
+    const revision = commitRevision;
     const remote = await hostCall('load', {});
+    // The answer can land after the user already moved a row or renamed a group.
+    // Their edit is newer than this snapshot, so keep theirs instead of rolling
+    // it back to whatever the Host had when the request left.
+    if (revision !== commitRevision) return;
     const stored = remote && remote.prefs ? sanitize(remote.prefs) : null;
     const local = readLocalPrefs();
     const hostFile = (remote && remote.file) || '';
@@ -1033,6 +1111,7 @@ function build(require) {
     const assign = { ...(prefs.assign || {}) };
     const knownGroups = new Set(groups.map((group) => group.id));
     const created = new Set();
+    const assigned = new Set();
     let count = 0;
     for (const group of (value && value.groups) || []) {
       const ids = (group.ids || []).filter((id) => known.has(id));
@@ -1050,6 +1129,7 @@ function build(require) {
         const current = assign[id] || '';
         if (!all && current && knownGroups.has(current)) continue;
         assign[id] = target.id;
+        assigned.add(id);
       }
       count += 1;
     }
@@ -1059,10 +1139,11 @@ function build(require) {
       const at = groups.findIndex((group) => group.id === id);
       if (at >= 0) groups.splice(at, 1);
     }
-    // Remember every entry this switch has already looked at, so a restart or a
-    // new session does not re-file (and therefore re-shuffle) the same rows.
+    // Remember only what this run actually filed. An entry the model left out
+    // stays eligible, so a later run can still place it; marking the whole list
+    // as handled made a missed entry permanently invisible to auto filing.
     const filed = new Set(prefs.autoFiled || []);
-    for (const entry of entries) filed.add(entry.id);
+    for (const id of assigned) filed.add(id);
     commit({ ...prefsNow(), groups, assign, autoFiled: Array.from(filed) });
     setAuto({
       status: 'done',
@@ -1071,6 +1152,15 @@ function build(require) {
       at: Date.now(),
     });
   }
+
+  /** A few Host failures deserve a sentence the user can act on. */
+  const AUTO_ERROR_TEXT = {
+    timeout: 'autoTimeout',
+    'model-failed': 'autoModelFailed',
+    'unparsable-answer': 'autoUnparsable',
+  };
+
+  let classifyToken = 0;
 
   async function classifyNow(mode) {
     const entries = store.state.entries || [];
@@ -1083,6 +1173,9 @@ function build(require) {
       setAuto({ status: 'error', message: t('autoUnavailable'), at: Date.now() });
       return;
     }
+    // Only the newest run may write its result: a second press while the first
+    // call is in flight otherwise lands later and overwrites the newer filing.
+    const token = ++classifyToken;
     setAuto({ status: 'running', message: t('autoRunning'), groups: 0, at: Date.now() });
     try {
       const result = await rpc.call(RPC_CHANNEL, RPC_ENDPOINT, {
@@ -1093,13 +1186,20 @@ function build(require) {
           locale: activeLang(),
         },
       });
+      if (token !== classifyToken) return;
       if (!result || result.ok !== true) {
-        const message = result && result.error && result.error.message ? result.error.message : 'unknown error';
-        throw new Error(message);
+        const error = (result && result.error) || {};
+        const key = AUTO_ERROR_TEXT[error.code];
+        if (key) {
+          setAuto({ status: 'error', message: t(key), at: Date.now() });
+          return;
+        }
+        throw new Error(error.message || 'unknown error');
       }
       reportHost({ kind: 'classified', mode: mode === 'all' ? 'all' : 'new', groups: (result.value && result.value.groups || []).length });
       applyClassification(result.value, mode === 'all' ? 'all' : 'new');
     } catch (error) {
+      if (token !== classifyToken) return;
       reportHost({ kind: 'classify-failed', message: (error && error.message) || String(error) });
       setAuto({
         status: 'error',
@@ -1285,6 +1385,41 @@ function build(require) {
     // check runs again on focus, and the answer must not pop back up.
     const [, forceRender] = React.useReducer((n) => n + 1, 0);
     const [groupDrag, setGroupDrag] = React.useState({ from: null, over: null });
+    /**
+     * Dragging works the same for a row and for a section: the handle starts it,
+     * the target highlights, dropping commits "move before this one". Only the
+     * commit differs, so the four handlers live here once instead of twice.
+     */
+    const dragProps = (id, state, setDrag, commitMove) => ({
+      draggable: true,
+      'data-dragging': state.from === id ? 'true' : 'false',
+      'data-over': state.over === id && state.from !== id ? 'true' : 'false',
+      onDragStart: (event) => {
+        dragRef.current = id;
+        setDrag({ from: id, over: null });
+        try {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', id);
+        } catch {
+          /* older engines refuse writes; the ref already holds the id */
+        }
+      },
+      onDragOver: (event) => {
+        event.preventDefault();
+        setDrag((prev) => (prev.over === id ? prev : { ...prev, over: id }));
+      },
+      onDrop: (event) => {
+        event.preventDefault();
+        const from = dragRef.current;
+        dragRef.current = null;
+        setDrag({ from: null, over: null });
+        if (from && from !== id) commitMove(from, id);
+      },
+      onDragEnd: () => {
+        dragRef.current = null;
+        setDrag({ from: null, over: null });
+      },
+    });
 
     React.useEffect(() => {
       if (engine) engine.refresh();
@@ -1297,7 +1432,7 @@ function build(require) {
       if (prefs.auto !== true) return;
       const auto = state.autoState || {};
       if (auto.status === 'running') return;
-      if (auto.status === 'error' && Date.now() - (auto.at || 0) < 60000) return;
+      if (auto.status === 'error' && Date.now() - (auto.at || 0) < AUTO_RETRY_MS) return;
       const filed = autoFiledSet();
       // A settings file written before autoFiled existed already carries the
       // classification the user accepted: treat it as filed, never re-sort it.
@@ -1308,7 +1443,7 @@ function build(require) {
       if (unseen.length === 0) return;
       const timer = setTimeout(() => {
         void classifyNow('new');
-      }, 1500);
+      }, AUTO_DELAY_MS);
       return () => clearTimeout(timer);
     }, [prefs.auto, prefs.autoFiled, entries.length, state.autoState && state.autoState.status]);
 
@@ -1485,34 +1620,7 @@ function build(require) {
           className: 'dpc-row',
           'data-hidden': isHidden ? 'true' : 'false',
           'data-locked': locked ? 'true' : 'false',
-          draggable: true,
-          'data-dragging': rowDrag.from === id ? 'true' : 'false',
-          'data-over': rowDrag.over === id && rowDrag.from !== id ? 'true' : 'false',
-          onDragStart: (event) => {
-            dragRef.current = id;
-            setRowDrag({ from: id, over: null });
-            try {
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.setData('text/plain', id);
-            } catch {
-              /* older engines refuse writes; the ref already holds the id */
-            }
-          },
-          onDragOver: (event) => {
-            event.preventDefault();
-            setRowDrag((prev) => (prev.over === id ? prev : { ...prev, over: id }));
-          },
-          onDrop: (event) => {
-            event.preventDefault();
-            const from = dragRef.current;
-            dragRef.current = null;
-            setRowDrag({ from: null, over: null });
-            if (from && from !== id) moveBefore(from, id);
-          },
-          onDragEnd: () => {
-            dragRef.current = null;
-            setRowDrag({ from: null, over: null });
-          },
+          ...dragProps(id, rowDrag, setRowDrag, moveBefore),
         },
         h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
         h('span', { className: 'dpc-pos' }, String(position + 1)),
@@ -1556,31 +1664,7 @@ function build(require) {
         {
           key: group.id,
           className: 'dpc-group',
-          draggable: true,
-          'data-dragging': groupDrag.from === group.id ? 'true' : 'false',
-          'data-over': groupDrag.over === group.id && groupDrag.from !== group.id ? 'true' : 'false',
-          onDragStart: (event) => {
-            setGroupDrag({ from: group.id, over: null });
-            try {
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.setData('text/plain', group.id);
-            } catch {
-              /* older engines refuse writes */
-            }
-          },
-          onDragOver: (event) => {
-            event.preventDefault();
-            setGroupDrag((prev) => (prev.over === group.id ? prev : { ...prev, over: group.id }));
-          },
-          onDrop: (event) => {
-            event.preventDefault();
-            const from = groupDrag.from;
-            setGroupDrag({ from: null, over: null });
-            if (from && from !== group.id) moveGroupBefore(from, group.id);
-          },
-          onDragEnd: () => {
-            setGroupDrag({ from: null, over: null });
-          },
+          ...dragProps(group.id, groupDrag, setGroupDrag, moveGroupBefore),
         },
         h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
         h('span', { className: 'dpc-groupDot', 'aria-hidden': true }),
@@ -1692,7 +1776,7 @@ function build(require) {
     .dpc-root{position:relative;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding:calc(28px + var(--dsh-frame-top-clearance,0px)) 0 32px;box-sizing:border-box;color:var(--dsw-alias-label-primary,#8a8a8a);font-size:13px;line-height:20px;font-variant-numeric:tabular-nums}
     .dpc-root *{box-sizing:border-box}
     .dpc-root :focus-visible{outline:2px solid var(--dsw-focus-ring-color,rgba(127,127,127,.65));outline-offset:2px}
-    .dpc-page{container-type:inline-size;display:flex;flex-direction:column;gap:24px;width:100%;min-width:0;padding-left:max(max(16px,min(4vw,48px)),50% - 480px);padding-right:max(max(16px,min(4vw,48px)),50% - 480px);animation:dpc-in 180ms cubic-bezier(.16,1,.3,1) both}
+    .dpc-page{container-type:inline-size;display:flex;flex-direction:column;gap:24px;width:100%;min-width:0;max-width:1056px;margin-inline:auto;padding-inline:max(16px,min(4vw,48px));animation:dpc-in 180ms cubic-bezier(.16,1,.3,1) both}
     @keyframes dpc-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 
     .dpc-head{display:flex;flex-direction:column;gap:6px}
@@ -1796,7 +1880,7 @@ function build(require) {
 
     /* Settings section: no page frame, no scroller — the dialog owns both. */
     .dpc-root--flush{height:auto;overflow:visible;padding:0}
-    .dpc-page--flush{padding-left:0;padding-right:0;gap:16px;animation:none}
+    .dpc-page--flush{max-width:none;margin-inline:0;padding-inline:0;gap:16px;animation:none}
     .dpc-head--section .dpc-title{display:none}
     .dpc-head--section .dpc-headLine{justify-content:flex-end}
     .dpc-settingsBody{min-width:0}
@@ -1810,7 +1894,6 @@ function build(require) {
       .dpc-row{flex-wrap:wrap;gap:8px}
       .dpc-rowText{flex:1 1 120px}
       .dpc-tags{order:8}
-      .dpc-page{padding-left:16px;padding-right:16px}
     }
     /* The settings column is narrower than the page column: drop what is only
        nice-to-have there instead of letting the row overflow. */
@@ -1932,7 +2015,7 @@ function build(require) {
   return {
     inject: ['slots'],
     // Pure helpers the browser harness drives directly, without a Cordis context.
-    testables: { createEngine, readEntries, normalize, sanitize, store, reorderList, applyInner, setCtx: (value) => { ctxRef = value; } },
+    testables: { createEngine, mapButtons, readEntries, normalize, sanitize, store, reorderList, applyInner, setCtx: (value) => { ctxRef = value; } },
     apply(ctx) {
       try {
         applyInner(ctx);

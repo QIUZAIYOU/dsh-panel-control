@@ -82,15 +82,30 @@ function isLoopbackAuthority(authority) {
   }
 }
 
-/** The renderer is same-origin, so a local Host header plus a local (or absent)
- * Origin is the whole check we need. */
-function isLoopbackRequest(request) {
-  if (!isLoopbackAuthority(request.headers.get('host'))) return false;
+/**
+ * Only the page the Host itself served may call this route.
+ *
+ * "Host and Origin are both loopback" is not enough: every dev server, every
+ * other app's webview and every local playground on this machine is also
+ * loopback, so that check let them rewrite the user's layout and spend model
+ * tokens. The discriminator is the port: the page is same-origin only when its
+ * origin carries the very authority this request arrived on.
+ */
+function isOwnRequest(request) {
+  const host = request.headers.get('host');
+  if (!isLoopbackAuthority(host)) return false;
+  // A browser labels where the request came from; anything but same-origin (or
+  // a non-browser caller) is a different page and has no business here.
+  const site = request.headers.get('sec-fetch-site');
+  if (site !== null && site !== 'same-origin' && site !== 'none') return false;
   const origin = request.headers.get('origin');
   if (origin === null) return true;
   try {
     const url = new URL(origin);
-    return (url.protocol === 'http:' || url.protocol === 'https:') && isLoopbackAuthority(url.host);
+    if (url.host === host) return true;
+    // The desktop shell serves the page from a custom protocol: that page is
+    // still the Host's own, even though its origin is not an http authority.
+    return url.protocol === 'dsh-app:' || url.protocol === 'file:';
   } catch {
     return false;
   }
@@ -158,7 +173,7 @@ async function readPrefsFile() {
   }
 }
 
-async function writePrefsFile(prefs) {
+async function writePrefsFileNow(prefs) {
   if (!isRecord(prefs)) throw new Error('preferences must be an object');
   const text = JSON.stringify(prefs);
   if (text.length > MAX_PREFS_BYTES) throw new Error('preferences are too large');
@@ -167,6 +182,26 @@ async function writePrefsFile(prefs) {
   await fs.writeFile(temporary, text, 'utf8');
   await fs.rename(temporary, PREFS_FILE);
   return text.length;
+}
+
+/**
+ * One writer at a time.
+ *
+ * Two windows (or a retry racing the debounce) otherwise both write the same
+ * `.tmp` path: one rename wins, the other fails with EPERM/EEXIST and that save
+ * is lost even though the caller was told nothing. A promise chain costs nothing
+ * here -- saves are rare and small -- and keeps the last write the one on disk.
+ */
+let writeChain = Promise.resolve();
+
+function writePrefsFile(prefs) {
+  const next = writeChain.then(
+    () => writePrefsFileNow(prefs),
+    () => writePrefsFileNow(prefs),
+  );
+  // Keep the chain alive after a rejection: the caller still gets the error.
+  writeChain = next.catch(() => {});
+  return next;
 }
 
 /* ------------------------------------------------------------------- prompt */
@@ -373,20 +408,28 @@ async function classify(scope, payload, signal) {
 /* -------------------------------------------------------------------- route */
 
 async function handle(scope, request) {
-  if (!isLoopbackRequest(request)) return new Response('forbidden', { status: 403 });
+  if (!isOwnRequest(request)) return new Response('forbidden', { status: 403 });
   if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
   const contentType = request.headers.get('content-type');
   if (!contentType || contentType.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
     return new Response('content type must be application/json', { status: 415 });
   }
 
+  // Read the text first: `request.json()` would parse the whole body before the
+  // size check could refuse it, which is exactly what the limit exists to stop.
+  let raw;
+  try {
+    raw = await request.text();
+  } catch {
+    return new Response('body is unreadable', { status: 400 });
+  }
+  if (raw.length > MAX_BODY_BYTES) return new Response('body too large', { status: 413 });
   let message;
   try {
-    message = await request.json();
+    message = JSON.parse(raw);
   } catch {
     return new Response('body is not JSON', { status: 400 });
   }
-  if (JSON.stringify(message).length > MAX_BODY_BYTES) return new Response('body too large', { status: 413 });
 
   const rpcId = isRecord(message) && typeof message.rpcId === 'string' ? message.rpcId : 'invalid-request';
   if (
@@ -544,6 +587,9 @@ export function apply(ctx) {
 
   const attach = (scope) => {
     if (disposed || dispose) return;
+    // A hot swap replaces the services themselves: a reference cached from the
+    // previous apply would answer with the old graph.
+    clientModules = null;
     attempts += 1;
     try {
       dispose = mount(scope);

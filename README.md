@@ -95,6 +95,40 @@ python -m http.server 8787 --bind 127.0.0.1   # 在仓库根目录
 
 排查顺序：`~/.dsh/panel-control/host.log` 看 Host 有没有挂上路由 → `client.log` 看有没有 `boot` → 两条都有但侧栏没入口，就按一次刷新按钮。
 
+## 代码审查后的加固（0.3.11）
+
+一轮完整审查（正确性 / 安全 / 可维护性 / 性能）之后改掉的东西，按主题记在这里，免得以后又踩回去。
+
+**安全**
+
+- 路由只认自己这一页：以前只校验「Host 和 Origin 都是 loopback」，于是本机任何一个 dev server 的页面（`http://127.0.0.1:3000`）都能调 `save` / `classify` / `report`——改布局、烧模型额度。现在要求 **端口也一致**，`Sec-Fetch-Site` 不是 `same-origin`/`none` 的一律 403，`dsh-app:`/`file:` 两种桌面端协议放行。
+- 体积上限移到解析之前：先 `request.text()` 量长度再看，超限直接 413（以前是先 `json()` 整个解析完再比，等于没有上限）。
+
+**正确性**
+
+- `mapButtons`：入口与行按钮的映射先按 `aria-label` 认，只有「剩余数量相等且标签逐一相符（或按钮根本没有标签）」才按位置补。以前无条件按位置兜底，一旦头部插入一行就整体错位，隐藏会隐藏错行。
+- `hydratePrefs`：冷启动读 Host 期间用户改过的设置不再被回来的旧快照覆盖（`commitRevision` 比对）。
+- `classifyNow`：并发闸（`classifyToken`），连点「重新分类」时只有最新一次的结果会落地。
+- `autoFiled`：只记这次真正归了组的条目，模型漏掉的下次还能补。
+- 写盘串行化（`writeChain`）：两个窗口同时保存不再抢同一个 `.tmp`。
+- 热替换后重置 `clientModules` 缓存，避免拿到上一代的图。
+
+**资源与性能**
+
+- `sanitize` 给所有数组/字典设上限并去重（order/hidden 200、autoFiled 400、分组 24、assign 400、名称 40 字）：256KB 的恶意文件不再能变出几千个分隔节点。
+- `MutationObserver` 只在找到列表之后盯那个列表，并给 `apply` 加 100ms 最小间隔——聊天流式输出不再每帧触发全量重排。
+
+**可维护性**
+
+- 常量具名（`SAVE_DEBOUNCE_MS` / `AUTO_DELAY_MS` / `AUTO_RETRY_MS` / `ORDER_UNMANAGED_TAIL`）。
+- 入口行与分组行的拖拽逻辑合并成 `dragProps()`，两边只传提交函数。
+- `flatten()` 缺语言时回退到另一种语言，不再渲染 `undefined`。
+- Host 的失败按 `code` 本地化（超时 / 模型失败 / 回答不可解析），不再把英文原文拼进中文界面。
+- `checkInventory` 5 秒节流（窗口每次聚焦都会触发）。
+- 页面列改成 `max-width:1056px; margin-inline:auto`：窄窗口下不再横向溢出（以前 `50% - 480px` 的算法在窄容器里会把列推到屏幕外，右侧按钮点不到）。
+
+回归测试：`npm run check`（Host 半 17 项，含同机异端口 / `same-site` / 自定义协议 / 超大 body 四条安全用例），`.scratch/harness.html` 37 项（新增 `mapButtons` 四条与 `sanitize` 上限四条）。
+
 ## 让 DSH 崩掉的两件事
 
 这两条都是真崩过的，不是推测。

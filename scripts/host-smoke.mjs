@@ -141,9 +141,10 @@ for (const timer of timers) {
 await new Promise((resolve) => realSetTimeout(resolve, 150));
 
 if (route) {
-  const request = (payload) => ({
+  const request = (payload, headers) => ({
     method: 'POST',
-    headers: new Headers({ host: '127.0.0.1:1234', origin: 'http://127.0.0.1:1234', 'content-type': 'application/json' }),
+    headers: new Headers({ host: '127.0.0.1:1234', origin: 'http://127.0.0.1:1234', 'content-type': 'application/json', ...headers }),
+    text: async () => JSON.stringify(payload),
     json: async () => payload,
   });
   const envelope = (method) => ({
@@ -171,11 +172,42 @@ if (route) {
     const response = await route.fetch({
       method: 'POST',
       headers: new Headers({ host: 'example.com', 'content-type': 'application/json' }),
-      json: async () => envelope('inventory'),
+      text: async () => JSON.stringify(envelope('inventory')),
     });
     check('non-loopback refused', response.status === 403, String(response.status));
   } catch (error) {
     check('non-loopback refused', false, error.message);
+  }
+
+  // Same machine, different port: a dev server page must not rewrite the store.
+  const foreign = [
+    ['other port refused', { origin: 'http://127.0.0.1:3000' }],
+    ['same-site fetch refused', { 'sec-fetch-site': 'same-site' }],
+  ];
+  for (const [label, headers] of foreign) {
+    try {
+      const response = await route.fetch(request(envelope('inventory'), headers));
+      check(label, response.status === 403, String(response.status));
+    } catch (error) {
+      check(label, false, error.message);
+    }
+  }
+  // The desktop shell serves the page from a custom protocol; that one must pass.
+  try {
+    const response = await route.fetch(request(envelope('inventory'), { origin: 'dsh-app://app' }));
+    const body = await response.json();
+    check('custom-protocol page allowed', response.ok === true && body.result && body.result.ok === true);
+  } catch (error) {
+    check('custom-protocol page allowed', false, error.message);
+  }
+  // An oversized body is refused before it is parsed.
+  try {
+    const huge = request(envelope('inventory'));
+    huge.text = async () => 'x'.repeat(300 * 1024);
+    const response = await route.fetch(huge);
+    check('oversized body refused', response.status === 413, String(response.status));
+  } catch (error) {
+    check('oversized body refused', false, error.message);
   }
 }
 
