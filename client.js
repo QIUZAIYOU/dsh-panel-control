@@ -1776,7 +1776,7 @@ function build(require) {
     .dpc-root{position:relative;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding:calc(28px + var(--dsh-frame-top-clearance,0px)) 0 32px;box-sizing:border-box;color:var(--dsw-alias-label-primary,#8a8a8a);font-size:13px;line-height:20px;font-variant-numeric:tabular-nums}
     .dpc-root *{box-sizing:border-box}
     .dpc-root :focus-visible{outline:2px solid var(--dsw-focus-ring-color,rgba(127,127,127,.65));outline-offset:2px}
-    .dpc-page{container-type:inline-size;display:flex;flex-direction:column;gap:24px;width:100%;min-width:0;max-width:1056px;margin-inline:auto;padding-inline:max(16px,min(4vw,48px));animation:dpc-in 180ms cubic-bezier(.16,1,.3,1) both}
+    .dpc-page{container-type:inline-size;display:flex;flex-direction:column;gap:24px;width:min(960px,100%);min-width:0;margin-inline:auto;animation:dpc-in 180ms cubic-bezier(.16,1,.3,1) both}
     @keyframes dpc-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 
     .dpc-head{display:flex;flex-direction:column;gap:6px}
@@ -1890,6 +1890,11 @@ function build(require) {
     .dpc-ghost:hover:not(:disabled){border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
     .dpc-ghost:disabled{opacity:.4;cursor:default}
 
+    @media (max-width:1000px){
+      /* Below the column width the frame becomes the gutter instead of pushing
+         content past the window edge. */
+      .dpc-page{width:100%;padding-inline:16px}
+    }
     @media (max-width:760px){
       .dpc-row{flex-wrap:wrap;gap:8px}
       .dpc-rowText{flex:1 1 120px}
