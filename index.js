@@ -494,7 +494,7 @@ async function watchFirstClientBoot(startedAt) {
     });
     if (reported) return;
     logHost(
-      'client half did not report within 20s: the window is running a plugin list from before this code.',
+      'client half did not report within 12s: the window is running a plugin list from before this code.',
     );
     // The page will not ask for a script that is not in its frozen list, but it
     // does watch this package's files: one byte-level change to the Client entry
@@ -560,7 +560,7 @@ export function apply(ctx) {
         void watchFirstClientBoot(startedAt).catch((error) =>
           logHost(`client boot watchdog failed: ${describeError(error)}`),
         );
-      }, 20_000);
+      }, 12_000);
       if (typeof watchdog.unref === 'function') watchdog.unref();
       return;
     }
