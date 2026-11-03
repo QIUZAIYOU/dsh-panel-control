@@ -38,6 +38,8 @@ function build(require) {
   /** Rows start at 100 so an unmanaged flex sibling stays at the very end. */
   const ORDER_START = 100;
   const ORDER_STEP = 10;
+  /** Set right before a reload so the next mount can say "still missing". */
+  const RELOAD_MARK = 'dsh.panel-control.reload-at';
   /** Where unmanaged rows and the "More" launcher are pushed to. */
   const ORDER_UNMANAGED = 9000;
   /** Below this width the sidebar renders the icon rail, where headings do not fit. */
@@ -70,6 +72,21 @@ function build(require) {
     groupName: { zh: '分组名称', en: 'Group name' },
     deleteGroup: { zh: '删除分组', en: 'Delete group' },
     countFmt: { zh: '{n} 个入口 · {h} 个已隐藏', en: '{n} entries · {h} hidden' },
+    missingTitle: {
+      zh: '这个页面用的插件清单，已经不是最新的了',
+      en: 'This page is running an older plugin list',
+    },
+    staleBody: {
+      zh: '插件有更新，刷新一次页面即可同步。',
+      en: 'Something changed since this page loaded; one reload syncs it.',
+    },
+    missingBody: { zh: '刷新一次就会加载：{names}', en: 'One reload picks up: {names}' },
+    refreshPage: { zh: '刷新页面', en: 'Reload the page' },
+    missingMore: { zh: ' 等 {n} 个', en: ' and {n} more' },
+    refreshStillMissing: {
+      zh: '刷新后仍然缺：在插件管理里把它关一次再打开。',
+      en: 'Still missing after a reload: turn it off and on in Plugins once.',
+    },
     hint: {
       zh: '拖行首的把手排序；隐藏的入口仍留在列表里，随时可以放回来。',
       en: 'Drag the handle at the start of a row to reorder it; a hidden entry stays in this list and can come back at any time.',
@@ -245,6 +262,33 @@ function build(require) {
   }
 
   /**
+   * Is this page running the plugin list the Host is serving right now?
+   *
+   * A page keeps the boot manifest it was handed at load time. The Host keeps
+   * composing a new graph whenever a plugin is added, removed or rebuilt, so the
+   * two revisions drift apart and the page quietly runs without the newer
+   * plugins. The Host exposes its current revision; comparing it costs one call
+   * and needs nothing from any other plugin.
+   */
+  async function checkInventory() {
+    const boot = bootSnapshot();
+    if (!boot) {
+      setState({ inventory: { status: 'unsupported', stale: false, missing: [], at: Date.now() } });
+      return;
+    }
+    const value = await hostCall('inventory', {});
+    const rev = value && typeof value.rev === 'string' ? value.rev : '';
+    const hostIds = value && Array.isArray(value.ids) ? value.ids : null;
+    if (!rev || !hostIds) {
+      setState({ inventory: { status: 'unavailable', stale: false, missing: [], at: Date.now() } });
+      return;
+    }
+    const missing = hostIds.filter((id) => !boot.ids.has(id));
+    const stale = missing.length > 0 || rev !== boot.rev;
+    setState({ inventory: { status: 'done', stale, missing, rev, bootRev: boot.rev, at: Date.now() } });
+  }
+
+  /**
    * Settings live in a Host file, not only in `localStorage`.
    *
    * The renderer is served from the Host's loopback address, and that port
@@ -277,12 +321,66 @@ function build(require) {
     }
   }
 
+  /** The boot manifest this page was handed: its plugin ids and its revision. */
+  function bootSnapshot() {
+    try {
+      const boot = window.__DSH_BOOT__;
+      if (!boot || typeof boot.rev !== 'string' || !Array.isArray(boot.entries)) return null;
+      const ids = new Set(boot.entries.map((entry) => (entry && typeof entry.id === 'string' ? entry.id : '')).filter(Boolean));
+      return { rev: boot.rev, ids };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A reload is the only way to pick up plugin scripts this page never asked
+   * for: the boot list is frozen per load. Everything here is plain web API, so
+   * the plugin can heal itself without another plugin's help.
+   *
+   * `reload()` keeps the current URL, which is what the Host expects. A cache
+   * can still answer an older document, so a refusal or an exception falls back
+   * to a fresh navigation carrying a one-off query — the Host's boot injection
+   * does not read the query, but the browser cannot serve that one from cache.
+   */
+  function reloadPage() {
+    try {
+      window.sessionStorage.setItem(RELOAD_MARK, String(Date.now()));
+    } catch {
+      /* private mode: the mark is a nicety, not a requirement */
+    }
+    try {
+      window.location.reload();
+      return true;
+    } catch {
+      /* fall through to a fresh navigation */
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('dpc', String(Date.now()));
+      window.location.assign(url.toString());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function readReloadMark() {
+    try {
+      const raw = Number(window.sessionStorage.getItem(RELOAD_MARK));
+      return Number.isFinite(raw) && raw > 0 ? raw : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   const store = {
     state: {
       prefs: readLocalPrefs() || emptyPrefs(),
       entries: [],
       autoState: { status: 'idle', message: '', groups: 0 },
       diag: { prefsSource: 'local', href: 'unknown-origin', hostFile: '' },
+      inventory: { status: 'idle', stale: false, missing: [], at: 0 },
     },
     listeners: new Set(),
   };
@@ -1200,6 +1298,36 @@ function build(require) {
       h('p', { className: 'dpc-note dpc-hint' }, t('hint')),
     );
 
+    // The page runs the plugin list it booted with. When the Host has moved on
+    // (a plugin was added, removed or rebuilt), say so and offer the one action
+    // that fixes it — no other plugin is involved in the check or the reload.
+    const inventory = state.inventory || { status: 'idle', stale: false, missing: [] };
+    const missing = Array.isArray(inventory.missing) ? inventory.missing : [];
+    const notice = inventory.stale !== true
+      ? null
+      : h(
+          'section',
+          { className: 'dpc-notice', role: 'status' },
+          h(
+            'div',
+            { className: 'dpc-noticeText' },
+            h('p', { className: 'dpc-noticeTitle' }, t('missingTitle')),
+            h(
+              'p',
+              { className: 'dpc-note' },
+              missing.length === 0
+                ? t('staleBody')
+                : fill(t('missingBody'), {
+                    names:
+                      missing.slice(0, 3).join('、') +
+                      (missing.length > 3 ? fill(t('missingMore'), { n: missing.length - 3 }) : ''),
+                  }),
+            ),
+            readReloadMark() > 0 ? h('p', { className: 'dpc-note' }, t('refreshStillMissing')) : null,
+          ),
+          h('button', { type: 'button', className: 'dpc-noticeAction', onClick: reloadPage }, t('refreshPage')),
+        );
+
     const auto = h(
       'section',
       { className: 'dpc-card dpc-auto' },
@@ -1457,6 +1585,7 @@ function build(require) {
         'div',
         { className: 'dpc-page' },
         head,
+        notice,
         auto,
         order.length === 0
           ? h(
@@ -1522,6 +1651,12 @@ function build(require) {
     .dpc-card{padding:16px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06))}
     .dpc-cardTitle{margin:0;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
     .dpc-note{margin:4px 0 0;max-width:none;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-notice{display:flex;align-items:center;gap:16px;padding:12px 14px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.18));border-radius:var(--dsw-radius-md,8px);background:var(--dsw-alias-bg-l2,rgba(127,127,127,.08))}
+    .dpc-noticeText{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+    .dpc-noticeTitle{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#ececf1)}
+    .dpc-notice .dpc-note{margin:0}
+    .dpc-noticeAction{appearance:none;flex:none;padding:4px 10px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-primary,#ececf1);font:inherit;font-size:12px;line-height:18px;cursor:pointer}
+    .dpc-noticeAction:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16))}
     .dpc-auto{display:flex;flex-direction:column;gap:8px}
     .dpc-autoMain{display:flex;align-items:center;justify-content:space-between;gap:16px}
     .dpc-autoText{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden}
@@ -1671,7 +1806,24 @@ function build(require) {
 
       // Settings live in the Host's state directory, not in localStorage: the
       // renderer origin is a loopback port that changes on every restart.
-      void hydratePrefs();
+      void hydratePrefs().catch(() => {});
+      // A failed probe must never take the panel down with it: the page can load
+      // before the Host answers, and that is a "cannot tell" case, not an error
+      // worth throwing through `apply`.
+      const probe = () => {
+        try {
+          void checkInventory().catch(() => {});
+        } catch {
+          /* the check is advisory; the panel works without it */
+        }
+      };
+      probe();
+      // Coming back to this window is a natural moment to re-check: a plugin may
+      // have been toggled while the page sat in the background.
+      if (typeof window.addEventListener === 'function') {
+        window.addEventListener('focus', probe);
+        ctx.effect(() => () => window.removeEventListener('focus', probe), `${PACKAGE}: inventory`);
+      }
       reportHost({ kind: 'boot', origin: locationMode(), agent: String(navigator.userAgent || '').slice(0, 120) });
 
 

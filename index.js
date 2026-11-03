@@ -359,98 +359,28 @@ async function classify(scope, payload, signal) {
 
 /* -------------------------------------------------------------------- route */
 
-async function handle(scope, request) {
-  if (!isLoopbackRequest(request)) return new Response('forbidden', { status: 403 });
-  if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
-  const contentType = request.headers.get('content-type');
-  if (!contentType || contentType.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
-    return new Response('content type must be application/json', { status: 415 });
-  }
-
-  let message;
-  try {
-    message = await request.json();
-  } catch {
-    return new Response('body is not JSON', { status: 400 });
-  }
-  if (JSON.stringify(message).length > MAX_BODY_BYTES) return new Response('body too large', { status: 413 });
-
-  const rpcId = isRecord(message) && typeof message.rpcId === 'string' ? message.rpcId : 'invalid-request';
-  if (
-    !isRecord(message) ||
-    message.type !== 'client-request' ||
-    typeof message.rpcId !== 'string' ||
-    message.method !== ENDPOINT ||
-    !isRecord(message.payload)
-  ) {
-    return reply(rpcId, refusal('gateway/bad-request', 'This is not a panel-control request.'));
-  }
-  const call = message.payload;
-  const method = typeof call.method === 'string' ? call.method : '';
-
-  try {
-    if (method === 'classify') return reply(rpcId, await classify(scope, call.payload, request.signal));
-    if (method === 'load') return reply(rpcId, await loadPreferences());
-    if (method === 'save') return reply(rpcId, await savePreferences(call.payload));
-    if (method === 'report') {
-      const detail = isRecord(call.payload) ? call.payload : {};
-      const text = JSON.stringify(detail).slice(0, 4_000);
-      logClient(`${typeof detail.kind === 'string' ? detail.kind : 'report'} ${text}`);
-      return reply(rpcId, { ok: true, value: { logged: true } });
-    }
-    return reply(rpcId, refusal('unknown-method', `Unknown method: ${String(call.method)}`));
-  } catch (error) {
-    logHost(`request ${method || '?'} failed: ${describeError(error)}`);
-    return reply(rpcId, refusal('handler-failed', describeError(error)));
-  }
-}
-
-async function loadPreferences() {
-  const prefs = await readPrefsFile();
-  return { ok: true, value: { prefs, file: PREFS_FILE } };
-}
-
-async function savePreferences(payload) {
-  if (!isRecord(payload) || !isRecord(payload.prefs)) {
-    return refusal('bad-request', 'A preferences object is required.');
-  }
-  const bytes = await writePrefsFile(payload.prefs);
-  return { ok: true, value: { saved: true, bytes } };
-}
-
 /**
- * Say out loud when the page booted without this plugin.
- *
- * The Host is up (this half ran), yet the Client half reports nothing back: the
- * window was built from a plugin list that no longer matches the code on disk,
- * so its script request went nowhere and the page silently omits the entry. The
- * user sees a plugin that "does not start", and the logs used to be silent about
- * it -- so write the diagnosis where it can be found, once per launch.
+ * What the Host is serving to pages right now, taken from the same module graph
+ * that builds `window.__DSH_BOOT__`. Comparing revisions is the only reliable
+ * way to tell "this page booted with an older plugin list": the page cannot
+ * read the Host's list, and the profile manifest says nothing about which
+ * plugins actually made it into the served graph.
  */
-async function watchFirstClientBoot(startedAt) {
-  try {
-    let text = '';
-    try {
-      text = await fs.readFile(CLIENT_LOG, 'utf8');
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') throw error;
-    }
-    const since = startedAt - 4000;
-    const reported = text
-      .split(String.fromCharCode(10))
-      .filter((line) => line.includes('"kind":"boot"'))
-      .some((line) => {
-        const stamp = Date.parse(line.slice(0, line.indexOf(' ')));
-        return Number.isFinite(stamp) && stamp >= since;
-      });
-    if (reported) return;
-    logHost(
-      'client half did not report within 20s: the window likely booted with a plugin list from before this code. ' +
-        'Press the desktop refresh button (or Ctrl+R) once; open a new window afterwards to confirm.',
-    );
-  } catch (error) {
-    logHost(`client boot watchdog failed: ${describeError(error)}`);
-  }
+let clientModules = null;
+
+function inventorySnapshot(scope) {
+  if (!clientModules) clientModules = serviceOf(scope, 'clientModules');
+  const graph = clientModules && typeof clientModules.graph === 'function' ? clientModules.graph() : null;
+  if (!graph || typeof graph.rev !== 'string') return { ok: false, error: { message: 'The plugin graph is not readable.' } };
+  const entries = Array.isArray(graph.entries) ? graph.entries : [];
+  return {
+    ok: true,
+    value: {
+      rev: graph.rev,
+      release: typeof graph.release === 'string' ? graph.release : null,
+      ids: entries.map((entry) => String(entry && entry.id)).filter(Boolean),
+    },
+  };
 }
 
 /** Register the route; returns null while `connection` is not available yet so
