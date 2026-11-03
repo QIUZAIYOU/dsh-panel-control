@@ -33,7 +33,12 @@ const ROUTE_PATH = `/api/${ENDPOINT}`;
  * back to registration order. A file under the profile's data directory
  * survives restarts, upgrades and origin changes alike.
  */
-const STATE_DIR = path.join(os.homedir(), '.dsh', 'panel-control');
+// Tests (and anyone sandboxing this plugin) point DPC_STATE_DIR somewhere else;
+// the smoke harness writes here, and it must not touch the real preferences or
+// the real log that support questions get asked about.
+const STATE_DIR = process.env.DPC_STATE_DIR
+  ? path.resolve(process.env.DPC_STATE_DIR)
+  : path.join(os.homedir(), '.dsh', 'panel-control');
 const PREFS_FILE = path.join(STATE_DIR, 'prefs.json');
 const HOST_LOG = path.join(STATE_DIR, 'host.log');
 const CLIENT_LOG = path.join(STATE_DIR, 'client.log');
@@ -544,6 +549,72 @@ function logInventoryOnApply(scope) {
 }
 
 /**
+ * Serve the current revision when a page asks for one this process has retired.
+ *
+ * The registry addresses every bundle by a revision derived from the file's
+ * mtime, ctime and size, and it answers only the revisions it read at
+ * composition time ("versioned code is immutable"). A page keeps the list it
+ * booted with, so as soon as this package's file is rewritten - by an editor, by
+ * git normalising line endings, or by the retry nudge that used to live here -
+ * the page's revision stops existing and its request becomes a 404 that nothing
+ * reports: the plugin is simply absent from the sidebar.
+ *
+ * This wraps the registry's own resource lookup for this one package. A 404 for
+ * a stale revision is retried at the revision the Host holds now, and the page
+ * gets the bytes it needs; everything else passes straight through, and the
+ * patch is undone on teardown.
+ */
+const SERVE_CURRENT = String(process.env.DPC_SERVE_CURRENT || '').toLowerCase() !== 'off';
+let servePatched = null;
+let serveLoggedAt = 0;
+
+function serveCurrentRevision(scope) {
+  if (!SERVE_CURRENT || servePatched) return;
+  const modules = clientModules || serviceOf(scope, 'clientModules');
+  if (!modules || typeof modules.bundleResource !== 'function') return;
+  const original = modules.bundleResource.bind(modules);
+  servePatched = modules;
+  modules.bundleResource = async function bundleResourceWithFallback(method, url) {
+    const answer = await original(method, url);
+    if (answer && answer.status !== 404) return answer;
+    try {
+      const requested = String(url || '');
+      if (!requested.includes(PACKAGE)) return answer;
+      const graph = typeof modules.graph === 'function' ? modules.graph() : null;
+      const rows = graph && Array.isArray(graph.entries) ? graph.entries : [];
+      const entry = rows.find((row) => row && row.id === PACKAGE);
+      if (!entry || typeof entry.url !== 'string') return answer;
+      const retryUrl = entry.url.startsWith('/') ? entry.url : `/${entry.url}`;
+      if (retryUrl === requested) return answer;
+      const retried = await original(method, retryUrl);
+      if (!retried || retried.status !== 200) return answer;
+      if (Date.now() - serveLoggedAt > 30_000) {
+        serveLoggedAt = Date.now();
+        logHost(
+          `served ${PACKAGE} at the current revision: the page asked for a retired one ` +
+            '(its plugin list predates the last write to client.js)',
+        );
+      }
+      return retried;
+    } catch (error) {
+      logHost(`stale revision fallback failed: ${describeError(error)}`);
+      return answer;
+    }
+  };
+}
+
+function releaseServeCurrent() {
+  const modules = servePatched;
+  servePatched = null;
+  if (!modules) return;
+  try {
+    delete modules.bundleResource;
+  } catch {
+    /* a frozen service keeps the wrapper; it only ever adds a retry */
+  }
+}
+
+/**
  * Ask the Host to serve this package's own bundle, the way the page would.
  *
  * A row can be advertised and still be unservable: the registry answers only
@@ -688,6 +759,7 @@ export function apply(ctx) {
     if (dispose) {
       logHost(`route mounted at ${ROUTE_PATH} (attempt ${attempts})`);
       logInventoryOnApply(scope);
+      serveCurrentRevision(scope);
       const startedAt = Date.now();
       // A timer callback that throws is fatal for the Host: contain it here and
       // again inside the async body.
@@ -724,6 +796,7 @@ export function apply(ctx) {
           }
         }
         dispose = null;
+        releaseServeCurrent();
       },
       `${PACKAGE}: classification route`,
     );

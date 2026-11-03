@@ -10,9 +10,17 @@
  *   node .scratch/host-smoke.mjs
  */
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+// Keep the harness out of the real preferences and the real host.log: the
+// module resolves its state directory at import time, so this must be set first.
+const STATE = path.join(here, '..', '.scratch', 'smoke-state');
+process.env.DPC_STATE_DIR = STATE;
+await fs.mkdir(STATE, { recursive: true });
+
 // `npm run smoke -- <file>` points the harness at another copy, which is how
 // a regression (or the broken revision that shipped once) gets reproduced.
 const override = process.argv[2];
@@ -43,6 +51,27 @@ function check(name, ok, detail) {
   }
 }
 
+// The registry currently holds revision "rev-now" for this package; the page
+// below asks for "rev-old", which is the 404 that silently drops a plugin.
+const clientModulesStub = {
+  served: [],
+  graph: () => ({
+    rev: 'rev-test',
+    release: 'rel',
+    entries: [
+      { id: 'a' },
+      { id: 'b' },
+      { id: 'dsh-panel-control', rev: 'rev-now', url: 'plugins/??dsh-panel-control/client.js&rev=rev-now' },
+    ],
+    batches: [],
+  }),
+  async bundleResource(method, url) {
+    clientModulesStub.served.push(String(url));
+    if (String(url).includes('rev-now')) return { status: 200, headers: {}, body: 'current' };
+    return { status: 404 };
+  },
+};
+
 const registrations = [];
 const scope = {
   get(key) {
@@ -58,7 +87,7 @@ const scope = {
       };
     }
     if (key === 'clientModules') {
-      return { graph: () => ({ rev: 'rev-test', release: 'rel', entries: [{ id: 'a' }, { id: 'b' }], batches: [] }) };
+      return clientModulesStub;
     }
     return undefined;
   },
@@ -158,7 +187,25 @@ if (route) {
     const body = await response.json();
     check('inventory answers', body && body.result && body.result.ok === true, JSON.stringify(body).slice(0, 160));
     check('inventory rev matches graph', body.result.value.rev === 'rev-test', body.result.value && body.result.value.rev);
-    check('inventory ids', Array.isArray(body.result.value.ids) && body.result.value.ids.join() === 'a,b');
+
+    const stale = await clientModulesStub.bundleResource(
+      'GET',
+      '/plugins/??dsh-panel-control/client.js&rev=rev-old',
+    );
+    check('stale revision is served at the current one', stale.status === 200, `status ${stale.status}`);
+    const fresh = await clientModulesStub.bundleResource(
+      'GET',
+      '/plugins/??dsh-panel-control/client.js&rev=rev-now',
+    );
+    check('current revision passes straight through', fresh.status === 200, `status ${fresh.status}`);
+    const other = await clientModulesStub.bundleResource('GET', '/plugins/??someone-else/client.js&rev=old');
+    check('other packages keep their 404', other.status === 404, `status ${other.status}`);
+    check(
+      'inventory ids',
+      Array.isArray(body.result.value.ids) &&
+        body.result.value.ids.join() === 'a,b,dsh-panel-control',
+      body.result.value && body.result.value.ids.join(),
+    );
   } catch (error) {
     check('inventory answers', false, error.message);
   }
