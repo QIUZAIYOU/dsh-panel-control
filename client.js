@@ -73,9 +73,10 @@ function build(require) {
     deleteGroup: { zh: '删除分组', en: 'Delete group' },
     countFmt: { zh: '{n} 个入口 · {h} 个已隐藏', en: '{n} entries · {h} hidden' },
     hint: {
-      zh: '拖动行可以调整顺序，也可以用 ↑ ↓ 逐格移动。隐藏的入口仍然留在列表里，随时可以放回来。',
-      en: 'Drag a row to reorder it, or use ↑ ↓ to move it one step. A hidden entry stays in this list and can be brought back at any time.',
+      zh: '拖动行可以调整顺序，也可以用行右侧的箭头逐格移动。隐藏的入口仍然留在列表里，随时可以放回来。',
+      en: 'Drag a row to reorder it, or use the arrows on the right to move it one step. A hidden entry stays in this list and can come back at any time.',
     },
+    dragHint: { zh: '拖动排序', en: 'Drag to reorder' },
     locked: { zh: '固定显示', en: 'always shown' },
     lockedHint: {
       zh: '这一行是本插件的入口，隐藏后仍可从“设置 → 面板管理”打开本页。',
@@ -98,8 +99,8 @@ function build(require) {
     resetDone: { zh: '已恢复默认顺序与可见性。', en: 'Order and visibility were reset.' },
     autoTitle: { zh: '自动分类', en: 'Auto classify' },
     autoHint: {
-      zh: '打开后，本插件会让当前会话的默认模型把这些入口分成 2–4 组。分组只是侧栏里的分隔线，入口本身不会被改动；结果保存在本机。',
-      en: 'When on, the default model files these entries into 2-4 groups. Groups are only titled dividers in the sidebar and entries are never changed; the result is kept on this machine.',
+      zh: '打开后由当前会话的默认模型把这些入口分成 2–4 组。分组只是侧栏里的分隔线，入口本身不会被改动，结果保存在本机。',
+      en: 'When on, the default model of this session files these entries into 2-4 groups. Groups are only titled dividers in the sidebar, entries are never changed and the result stays on this machine.',
     },
     autoRunning: { zh: '正在分类…', en: 'Classifying…' },
     autoAgain: { zh: '重新分类', en: 'Classify again' },
@@ -973,9 +974,46 @@ function build(require) {
 
   /* ------------------------------------------------------------ components */
 
-  const ICON_PATHS = [
-    'M4 7h10M18 7h2M4 12h4M12 12h8M4 17h12M20 17h0',
-  ];
+  const ICON_D = {
+    grip: 'M9 7h.01M9 12h.01M9 17h.01M15 7h.01M15 12h.01M15 17h.01',
+    up: 'M12 19V6M6.5 11.5 12 6l5.5 5.5',
+    down: 'M12 5v13M6.5 12.5 12 18l5.5-5.5',
+    close: 'M7 7l10 10M17 7 7 17',
+    plus: 'M12 6v12M6 12h12',
+    eye: 'M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z',
+    eyeOff: 'M2.5 12S6 6.5 12 6.5c1.6 0 3 .45 4.2 1.1M21.5 12S18 17.5 12 17.5c-1.6 0-3-.45-4.2-1.1M4 4l16 16',
+  };
+
+  /** One 16px line glyph, one 1.5 stroke, colours inherited from the text role. */
+  function Icon(props) {
+    const d = ICON_D[props.name] || '';
+    const children = [
+      h('path', {
+        key: 'p',
+        d,
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      }),
+    ];
+    if (props.name === 'eye' || props.name === 'eyeOff') {
+      children.push(h('circle', { key: 'c', cx: 12, cy: 12, r: 2.6, stroke: 'currentColor', strokeWidth: 1.5 }));
+    }
+    return h(
+      'svg',
+      {
+        className: 'dpc-ico',
+        width: 16,
+        height: 16,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        'aria-hidden': true,
+        focusable: 'false',
+      },
+      children,
+    );
+  }
 
   function SlidersIcon(props) {
     const size = props && typeof props.size === 'number' ? props.size : 18;
@@ -1012,7 +1050,7 @@ function build(require) {
       try {
         const slots = ctxRef && ctxRef.slots;
         if (slots && typeof slots.renderSlot === 'function') {
-          value = slots.renderSlot(SLOT_PANELS, { size: 15, active: false }, { only: props.id });
+          value = slots.renderSlot(SLOT_PANELS, { size: 16, active: false }, { only: props.id });
         }
       } catch {
         value = null;
@@ -1058,7 +1096,7 @@ function build(require) {
           'aria-haspopup': 'listbox',
           'aria-expanded': open ? 'true' : 'false',
           'aria-label': props.label,
-          title: props.label,
+          title: current.label,
           onClick: () => setOpen((was) => !was),
         },
         h('span', { className: 'dpc-pickerText' }, current.label),
@@ -1126,50 +1164,50 @@ function build(require) {
     const order = normalize(prefs, entries);
     const labelOf = new Map(entries.map((entry) => [entry.id, entry.label]));
     const hidden = new Set(prefs.hidden || []);
+    const groupsOf = prefs.groups || [];
+    const autoOn = prefs.auto === true;
+    const autoState = state.autoState || { status: 'idle', message: '', groups: 0 };
 
     const head = h(
       'header',
       { className: 'dpc-head' },
+      h('h1', { className: 'dpc-title' }, t('panelTitle')),
+      h('p', { className: 'dpc-lede' }, t('subtitle')),
       h(
         'div',
-        { className: 'dpc-headText' },
-        h('h2', { className: 'dpc-title' }, t('panelTitle')),
-        h('p', { className: 'dpc-sub' }, t('subtitle')),
-      ),
-      h(
-        'div',
-        { className: 'dpc-headActions' },
-        h('button', { type: 'button', className: 'dpc-ghost', onClick: sortByName }, t('sortByName')),
+        { className: 'dpc-toolbar' },
+        h('p', { className: 'dpc-count' }, fill(t('countFmt'), { n: order.length, h: hidden.size })),
         h(
-          'button',
-          { type: 'button', className: 'dpc-ghost', onClick: showAll, disabled: (prefs.hidden || []).length === 0 },
-          t('showAll'),
+          'div',
+          { className: 'dpc-toolbarActions' },
+          h('button', { type: 'button', className: 'dpc-link', onClick: sortByName }, t('sortByName')),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dpc-link',
+              onClick: showAll,
+              disabled: hidden.size === 0,
+            },
+            t('showAll'),
+          ),
+          h('button', { type: 'button', className: 'dpc-link', onClick: resetAll }, t('reset')),
         ),
-        h('button', { type: 'button', className: 'dpc-ghost', onClick: resetAll }, t('reset')),
       ),
+      h('p', { className: 'dpc-note dpc-hint' }, t('hint')),
     );
 
-    const meta = h(
-      'div',
-      { className: 'dpc-meta' },
-      h('span', { className: 'dpc-count' }, fill(t('countFmt'), { n: order.length, h: hidden.size })),
-      h('span', { className: 'dpc-hintInline' }, t('hint')),
-    );
-
-    
-    const autoOn = prefs.auto === true;
-    const autoState = state.autoState || { status: 'idle', message: '', groups: 0 };
     const auto = h(
       'section',
-      { className: 'dpc-section dpc-auto' },
+      { className: 'dpc-card dpc-auto' },
       h(
-        'header',
-        { className: 'dpc-sectionHead' },
+        'div',
+        { className: 'dpc-autoMain' },
         h(
           'div',
           { className: 'dpc-autoText' },
-          h('h3', { className: 'dpc-sectionTitle' }, t('autoTitle')),
-          h('p', { className: 'dpc-hint' }, t('autoHint')),
+          h('h2', { className: 'dpc-cardTitle' }, t('autoTitle')),
+          h('p', { className: 'dpc-note' }, t('autoHint')),
         ),
         h(
           'div',
@@ -1179,7 +1217,7 @@ function build(require) {
                 'button',
                 {
                   type: 'button',
-                  className: 'dpc-ghost',
+                  className: 'dpc-link',
                   onClick: () => classifyNow(),
                   disabled: autoState.status === 'running',
                 },
@@ -1194,7 +1232,6 @@ function build(require) {
               role: 'switch',
               'aria-checked': autoOn ? 'true' : 'false',
               'aria-label': t('autoTitle'),
-              title: t('autoTitle'),
               onClick: toggleAuto,
             },
             h('span', { className: 'dpc-switchKnob', 'aria-hidden': true }),
@@ -1203,8 +1240,33 @@ function build(require) {
       ),
       autoState.status === 'idle' || autoState.message === ''
         ? null
-        : h('p', { className: 'dpc-autoLine', 'data-error': autoState.status === 'error' ? 'true' : 'false' }, autoState.message),
+        : h(
+            'p',
+            {
+              className: 'dpc-status',
+              'data-error': autoState.status === 'error' ? 'true' : 'false',
+              'aria-live': 'polite',
+            },
+            autoState.message,
+          ),
     );
+
+    const iconButton = (name, label, onClick, disabled, extra) =>
+      h(
+        'button',
+        Object.assign(
+          {
+            type: 'button',
+            className: 'dpc-icon',
+            onClick,
+            disabled: Boolean(disabled),
+            'aria-label': label,
+            title: label,
+          },
+          extra || {},
+        ),
+        h(Icon, { name }),
+      );
 
     const rows = order.map((id, position) => {
       const label = labelOf.get(id) || id;
@@ -1240,133 +1302,98 @@ function build(require) {
             dragRef.current = null;
           },
         },
-        h('span', { className: 'dpc-grip', 'aria-hidden': true }, '⠿'),
+        h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
         h('span', { className: 'dpc-pos' }, String(position + 1)),
         h(Glyph, { id }),
-        h('span', { className: 'dpc-name', title: label }, label),
-        h('code', { className: 'dpc-key', title: id }, id),
-        locked ? h('span', { className: 'dpc-chip dpc-chip-locked', title: t('lockedHint') }, t('locked')) : null,
-        isHidden ? h('span', { className: 'dpc-chip' }, t('hiddenChip')) : null,
-        (prefs.groups || []).length === 0
+        h(
+          'span',
+          { className: 'dpc-rowText' },
+          h('span', { className: 'dpc-name', title: label }, label),
+          h('code', { className: 'dpc-key', title: id }, id),
+        ),
+        h(
+          'span',
+          { className: 'dpc-tags' },
+          locked ? h('span', { className: 'dpc-tag' }, t('locked')) : null,
+          isHidden ? h('span', { className: 'dpc-tag' }, t('hiddenChip')) : null,
+        ),
+        groupsOf.length === 0
           ? null
           : h(GroupPicker, {
               id,
-              groups: prefs.groups || [],
+              groups: groupsOf,
               value: prefs.assign[id] || '',
               label: t('groupLabel'),
               ungrouped: t('ungrouped'),
               onPick: (next) => setGroup(id, next),
             }),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'dpc-mini',
-            onClick: () => moveBy(id, -1),
-            disabled: position === 0,
-            'aria-label': t('moveUp'),
-            title: t('moveUp'),
-          },
-          '↑',
-        ),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'dpc-mini',
-            onClick: () => moveBy(id, 1),
-            disabled: position === order.length - 1,
-            'aria-label': t('moveDown'),
-            title: t('moveDown'),
-          },
-          '↓',
-        ),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'dpc-eye',
-            onClick: () => toggleHidden(id),
-            disabled: locked,
-            'aria-pressed': !isHidden,
-            'aria-label': isHidden ? t('showIt') : t('hideIt'),
-            title: locked ? t('lockedHint') : isHidden ? t('showIt') : t('hideIt'),
-          },
-          isHidden ? '○' : '●',
+        iconButton('up', t('moveUp'), () => moveBy(id, -1), position === 0),
+        iconButton('down', t('moveDown'), () => moveBy(id, 1), position === order.length - 1),
+        iconButton(
+          isHidden ? 'eyeOff' : 'eye',
+          locked ? t('lockedHint') : isHidden ? t('showIt') : t('hideIt'),
+          () => toggleHidden(id),
+          locked,
+          { 'aria-pressed': isHidden ? 'false' : 'true', className: 'dpc-icon dpc-eye' },
         ),
       );
     });
 
-    const groups = h(
-      'section',
-      { className: 'dpc-section' },
-      h(
-        'header',
-        { className: 'dpc-sectionHead' },
-        h('h3', { className: 'dpc-sectionTitle' }, t('groupsTitle')),
-        h('button', { type: 'button', className: 'dpc-ghost', onClick: addGroup }, t('newGroup')),
-      ),
-      h('p', { className: 'dpc-hint' }, t('groupsHint')),
-      (prefs.groups || []).length === 0
-        ? h('p', { className: 'dpc-empty' }, t('noGroups'))
+    const groupRow = (group, index) => {
+      const members = order.filter((id) => (prefs.assign[id] || '') === group.id);
+      return h(
+        'li',
+        { key: group.id, className: 'dpc-group' },
+        h('span', { className: 'dpc-groupDot', 'aria-hidden': true }),
+        h('input', {
+          className: 'dpc-input',
+          value: group.name,
+          'aria-label': t('groupName'),
+          onChange: (event) => renameGroup(group.id, event.target.value),
+        }),
+        h(
+          'span',
+          { className: 'dpc-groupActions' },
+          h('span', { className: 'dpc-count' }, String(members.length)),
+          iconButton('up', t('moveUp'), () => moveGroup(group.id, -1), index === 0),
+          iconButton('down', t('moveDown'), () => moveGroup(group.id, 1), index === groupsOf.length - 1),
+          iconButton('close', t('deleteGroup'), () => removeGroup(group.id), false),
+        ),
+      );
+    };
+
+    const groups =
+      groupsOf.length === 0
+        ? h(
+            'section',
+            { className: 'dpc-card dpc-empty' },
+            h('p', { className: 'dpc-emptyTitle' }, t('noGroups')),
+            h(
+              'button',
+              { type: 'button', className: 'dpc-link', onClick: addGroup },
+              t('newGroup'),
+            ),
+          )
         : h(
-            'ul',
-            { className: 'dpc-groupList' },
-            (prefs.groups || []).map((group) => {
-              const members = order.filter((id) => (prefs.assign[id] || '') === group.id);
-              return h(
-                'li',
-                { key: group.id, className: 'dpc-group' },
-                h('span', { className: 'dpc-groupDot', 'aria-hidden': true }),
-                h('input', {
-                  className: 'dpc-input',
-                  value: group.name,
-                  'aria-label': t('groupName'),
-                  title: t('groupName'),
-                  onChange: (event) => renameGroup(group.id, event.target.value),
-                }),
-                h('span', { className: 'dpc-count' }, String(members.length)),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dpc-mini',
-                    onClick: () => moveGroup(group.id, -1),
-                    disabled: (prefs.groups || [])[0].id === group.id,
-                    'aria-label': t('moveUp'),
-                    title: t('moveUp'),
-                  },
-                  '↑',
-                ),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dpc-mini',
-                    onClick: () => moveGroup(group.id, 1),
-                    disabled: (prefs.groups || [])[(prefs.groups || []).length - 1].id === group.id,
-                    'aria-label': t('moveDown'),
-                    title: t('moveDown'),
-                  },
-                  '↓',
-                ),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dpc-mini',
-                    onClick: () => removeGroup(group.id),
-                    'aria-label': t('deleteGroup'),
-                    title: t('deleteGroup'),
-                  },
-                  '✕',
-                ),
-              );
-            }),
-          ),
-    );
+            'section',
+            { className: 'dpc-section' },
+            h(
+              'div',
+              { className: 'dpc-sectionHead' },
+              h('h2', { className: 'dpc-sectionTitle' }, t('groupsTitle')),
+              h(
+                'button',
+                { type: 'button', className: 'dpc-link', onClick: addGroup },
+                t('newGroup'),
+              ),
+            ),
+            h('p', { className: 'dpc-note' }, t('groupsHint')),
+            h('ul', { className: 'dpc-groups' }, groupsOf.map(groupRow)),
+          );
 
     const diagnostics = engine ? engine.diagnostics() : null;
+    const diagRow = (term, value, mono) =>
+      [h('dt', { key: 't' }, term), h('dd', { key: 'd', className: mono ? 'dpc-mono' : undefined }, value)];
     const diag = h(
       'details',
       { className: 'dpc-diag' },
@@ -1374,38 +1401,40 @@ function build(require) {
       h(
         'dl',
         { className: 'dpc-diagList' },
-        h('dt', null, t('diagList')),
-        h('dd', null, diagnostics && diagnostics.found ? `${t('diagFound')} · ${diagnostics.listClass || '—'}` : t('diagMissing')),
-        h('dt', null, t('diagRows')),
-        h('dd', null, String(diagnostics ? diagnostics.rows : 0)),
-        h('dt', null, t('diagMapped')),
-        h('dd', null, String(diagnostics ? diagnostics.mapped : 0)),
-        h('dt', null, t('diagSource')),
-        h('dd', null, `${entries.length}`),
-        h('dt', null, t('diagPrefs')),
-        h('dd', null, (state.diag && state.diag.prefsSource) || '—'),
-        h('dt', null, t('diagFile')),
-        h('dd', null, (state.diag && state.diag.hostFile) || '—'),
-        h('dt', null, t('diagOrigin')),
-        h('dd', null, (state.diag && state.diag.href) || '—'),
-        h('dt', null, t('diagAt')),
-        h('dd', null, diagnostics && diagnostics.at ? new Date(diagnostics.at).toLocaleTimeString() : t('diagNone')),
-        diagnostics && diagnostics.error ? h('dt', null, 'error') : null,
-        diagnostics && diagnostics.error ? h('dd', { className: 'dpc-error' }, diagnostics.error) : null,
+        diagRow(t('diagList'), diagnostics && diagnostics.found ? `${t('diagFound')} · ${diagnostics.listClass || '—'}` : t('diagMissing'), true),
+        diagRow(t('diagRows'), String(diagnostics ? diagnostics.rows : 0), true),
+        diagRow(t('diagMapped'), String(diagnostics ? diagnostics.mapped : 0), true),
+        diagRow(t('diagSource'), String(entries.length), true),
+        diagRow(t('diagPrefs'), (state.diag && state.diag.prefsSource) || '—', true),
+        diagRow(t('diagFile'), (state.diag && state.diag.hostFile) || '—', true),
+        diagRow(t('diagOrigin'), (state.diag && state.diag.href) || '—', true),
+        diagRow(t('diagAt'), diagnostics && diagnostics.at ? new Date(diagnostics.at).toLocaleTimeString() : t('diagNone'), true),
+        diagnostics && diagnostics.error ? h('dt', { key: 'et' }, 'error') : null,
+        diagnostics && diagnostics.error
+          ? h('dd', { key: 'ed', className: 'dpc-error' }, diagnostics.error)
+          : null,
       ),
     );
 
     return h(
       'div',
       { className: 'dpc-root' },
-      head,
-      meta,
-      auto,
-      order.length === 0
-        ? h('p', { className: 'dpc-empty' }, t('empty'))
-        : h('ul', { className: 'dpc-list' }, rows),
-      groups,
-      diag,
+      h(
+        'div',
+        { className: 'dpc-page' },
+        head,
+        auto,
+        order.length === 0
+          ? h(
+              'section',
+              { className: 'dpc-card dpc-empty' },
+              h('p', { className: 'dpc-emptyTitle' }, t('empty')),
+              h('button', { type: 'button', className: 'dpc-link', onClick: resetAll }, t('reset')),
+            )
+          : h('ul', { className: 'dpc-list' }, rows),
+        groups,
+        diag,
+      ),
     );
   }
 
@@ -1437,95 +1466,134 @@ function build(require) {
   /* ------------------------------------------------------------------ css */
 
   const PANEL_CSS = `
-    .dpc-root{display:flex;flex-direction:column;gap:14px;padding:20px 24px 32px;margin:0 auto;width:100%;max-width:880px;box-sizing:border-box;color:var(--dsw-alias-label-primary,#ececf1);font-size:13px;line-height:1.55;min-height:100%;overflow-x:hidden;overflow-y:auto}
+    /* Page frame: scrolling lives on the page, the gutter on the content column. */
+    .dpc-root{position:relative;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding:calc(28px + var(--dsh-frame-top-clearance,0px)) 0 32px;box-sizing:border-box;color:var(--dsw-alias-label-primary,#8a8a8a);font-size:13px;line-height:20px;font-variant-numeric:tabular-nums}
     .dpc-root *{box-sizing:border-box}
-    .dpc-root :focus-visible{outline:2px solid var(--dsw-focus-ring-color,rgba(88,101,242,.65));outline-offset:2px}
-    .dpc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
-    .dpc-headText{min-width:0}
-    .dpc-title{margin:0;font-size:16px;font-weight:600;letter-spacing:.01em}
-    .dpc-sub{margin:2px 0 0;font-size:12px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.55))}
-    .dpc-headActions{display:flex;gap:8px;flex-wrap:wrap}
-    .dpc-meta{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;min-width:0}
-    .dpc-count{font-size:12px;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.72))}
-    .dpc-hintInline{font-size:11.5px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.5));min-width:0;overflow-wrap:anywhere}
-    .dpc-ghost{appearance:none;border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));background:transparent;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.72));border-radius:var(--dsw-radius-md,8px);padding:4px 10px;font:inherit;font-size:12px;cursor:pointer;transition:background .16s,border-color .16s,color .16s}
-    .dpc-ghost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.26));color:var(--dsw-alias-label-primary,#ececf1)}
-    .dpc-ghost:disabled{opacity:.45;cursor:default}
-    .dpc-primary{appearance:none;border:0;border-radius:var(--dsw-radius-md,8px);padding:5px 14px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;background:var(--dsw-alias-button-primary-fill,#5865f2);color:var(--dsw-alias-label-primary-inverted,#fff)}
-    .dpc-primary:hover{background:var(--dsw-alias-button-primary-hover,#4a56d8)}
-    .dpc-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;width:100%;min-width:0}
-    .dpc-row{display:flex;align-items:center;gap:8px;padding:7px 10px;width:100%;min-width:0;border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.13));border-radius:var(--dsw-radius-lg,10px);background:var(--dsw-alias-settings-card-fill,rgba(255,255,255,.03));transition:background .16s,border-color .16s,opacity .16s}
-    .dpc-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.22))}
-    .dpc-row[data-hidden="true"]{opacity:.55}
-    .dpc-row[data-locked="true"]{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 35%,transparent)}
-    .dpc-grip{cursor:grab;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.4));font-size:13px;line-height:1;user-select:none}
-    .dpc-pos{min-width:18px;text-align:right;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.45))}
-    .dpc-glyph{width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.8));flex:none}
-    .dpc-glyph:empty::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.35;display:block}
-    .dpc-name{font-size:13px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;max-width:220px}
-    .dpc-key{font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:10.5px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.4));min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 60px}
-    .dpc-chip{font-size:10.5px;line-height:16px;padding:0 6px;border-radius:var(--dsw-radius-xs,6px);border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.6));white-space:nowrap;flex:none}
-    .dpc-chip-locked{color:var(--dsw-alias-label-primary-bluish,#9db4f0);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 40%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 10%,transparent)}
-    .dpc-picker{position:relative;flex:none;display:flex}
-    .dpc-pickerBtn{appearance:none;display:inline-flex;align-items:center;gap:6px;max-width:150px;padding:3px 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-sm,6px);background-color:rgba(255,255,255,.06);color:var(--dsw-alias-label-primary,#ececf1);font:inherit;font-size:11.5px;line-height:16px;cursor:pointer;transition:background .16s,border-color .16s}
-    .dpc-pickerBtn:hover,.dpc-picker[data-open="true"] .dpc-pickerBtn{background-color:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));border-color:var(--dsw-alias-border-l3,rgba(255,255,255,.26))}
-    .dpc-pickerText{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .dpc-caret{flex:none;width:7px;height:7px;margin-top:-3px;border-right:1.2px solid currentColor;border-bottom:1.2px solid currentColor;transform:rotate(45deg);opacity:.6}
-    .dpc-picker[data-open="true"] .dpc-caret{margin-top:2px;transform:rotate(225deg)}
-    .dpc-menu{position:absolute;z-index:50;top:calc(100% + 4px);right:0;min-width:140px;max-width:220px;padding:4px;display:flex;flex-direction:column;gap:1px;background:var(--dsw-alias-bg-elevated,#2b2b31);border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-md,8px);box-shadow:0 10px 26px rgba(0,0,0,.5)}
-    .dpc-option{appearance:none;text-align:left;padding:5px 8px;border:0;border-radius:var(--dsw-radius-xs,5px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.8));font:inherit;font-size:12px;line-height:16px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .dpc-option:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.2));color:var(--dsw-alias-label-primary,#ececf1)}
-    .dpc-option[aria-selected="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 18%,transparent);color:var(--dsw-alias-label-primary-bluish,#9db4f0)}
-    .dpc-mini{appearance:none;flex:none;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:.5px solid transparent;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.7));font:inherit;font-size:12px;line-height:1;cursor:pointer}
-    .dpc-mini:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));border-color:var(--dsw-alias-border-l2,rgba(255,255,255,.16));color:var(--dsw-alias-label-primary,#ececf1)}
-    .dpc-mini:disabled{opacity:.3;cursor:default}
-    .dpc-eye{appearance:none;flex:none;width:26px;height:24px;display:inline-flex;align-items:center;justify-content:center;border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.14));border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.72));font:inherit;font-size:11px;line-height:1;cursor:pointer}
-    .dpc-eye:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));color:var(--dsw-alias-label-primary,#ececf1)}
-    .dpc-eye[aria-pressed="false"]{color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.45))}
-    .dpc-eye:disabled{opacity:.4;cursor:default}
-    .dpc-section{display:flex;flex-direction:column;gap:8px;padding-top:6px;border-top:.5px solid var(--dsw-alias-separator-primary,rgba(255,255,255,.08))}
-    .dpc-sectionHead{display:flex;align-items:center;justify-content:space-between;gap:10px}
-    .dpc-sectionTitle{margin:0;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.55))}
-    .dpc-hint{margin:0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.55))}
-    .dpc-empty{margin:0;padding:16px;border:.5px dashed var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-xl,14px);color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.55));font-size:12px}
-    .dpc-groupList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-    .dpc-group{display:flex;align-items:center;gap:8px}
-    .dpc-groupDot{width:8px;height:8px;border-radius:2px;background:var(--dsw-alias-state-business-primary,#5865f2);opacity:.75;flex:none}
-    .dpc-input{flex:1;min-width:0;padding:5px 9px;font:inherit;font-size:12.5px;color:var(--dsw-alias-label-primary,#ececf1);background:var(--dsw-alias-bg-l2,rgba(255,255,255,.05));border:.5px solid var(--dsw-alias-border-l2,rgba(255,255,255,.16));border-radius:var(--dsw-radius-md,8px)}
-    .dpc-diag{border-top:.5px solid var(--dsw-alias-separator-primary,rgba(255,255,255,.08));padding-top:8px;font-size:11.5px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.5))}
-    .dpc-diagSummary{cursor:pointer;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.5))}
-    .dpc-diagList{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px;margin:8px 0 0}
-    .dpc-diagList dt{opacity:.7}
-    .dpc-diagList dd{margin:0;font-family:var(--dsw-font-family-code,ui-monospace,monospace)}
-    .dpc-error{color:var(--dsw-alias-label-error,#e06a6a)}
+    .dpc-root :focus-visible{outline:2px solid var(--dsw-focus-ring-color,rgba(127,127,127,.65));outline-offset:2px}
+    .dpc-page{container-type:inline-size;display:flex;flex-direction:column;gap:24px;width:100%;min-width:0;padding-left:max(max(16px,min(4vw,48px)),50% - 480px);padding-right:max(max(16px,min(4vw,48px)),50% - 480px);animation:dpc-in 180ms cubic-bezier(.16,1,.3,1) both}
+    @keyframes dpc-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+    .dpc-head{display:flex;flex-direction:column;gap:8px}
+    .dpc-title{margin:0;font-size:16px;font-weight:600;line-height:24px;letter-spacing:-.01em;color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-lede{margin:0;max-width:62ch;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;min-height:28px}
+    .dpc-toolbarActions{display:flex;align-items:center;gap:4px}
+    .dpc-count{margin:0;flex:none;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));white-space:nowrap}
+    .dpc-link{appearance:none;border:0;background:transparent;padding:4px 8px;border-radius:var(--dsw-radius-sm,6px);font:inherit;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-link:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-link:disabled{opacity:.4;cursor:default}
+
+    .dpc-card{padding:16px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06))}
+    .dpc-cardTitle{margin:0;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-note{margin:4px 0 0;max-width:62ch;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-auto{display:flex;flex-direction:column;gap:8px}
+    .dpc-autoMain{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
     .dpc-autoText{min-width:0}
-    .dpc-autoText .dpc-hint{margin-top:2px;max-width:62ch}
-    .dpc-autoActions{display:flex;align-items:center;gap:8px;flex:none}
-    .dpc-autoLine{margin:0;font-size:11.5px;line-height:1.5;color:var(--dsw-alias-label-secondary,rgba(236,236,241,.7))}
-    .dpc-autoLine[data-error="true"]{color:var(--dsw-alias-label-error,#e06a6a)}
-    .dpc-switch{appearance:none;flex:none;position:relative;width:34px;height:20px;padding:0;border:0;border-radius:999px;background:var(--dsw-alias-bg-l3,rgba(255,255,255,.14));cursor:pointer;transition:background .16s ease}
-    .dpc-switch:hover{background:var(--dsw-alias-border-l3,rgba(255,255,255,.26))}
+    .dpc-autoActions{display:flex;flex:none;align-items:center;gap:8px}
+    .dpc-status{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+    .dpc-status[data-error="true"]{color:var(--dsw-alias-state-error-primary,#b45454)}
+
+    .dpc-switch{position:relative;flex:none;appearance:none;width:36px;height:20px;padding:0;border:0;border-radius:999px;background:var(--dsw-alias-bg-l3,rgba(127,127,127,.24));cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-switch[aria-checked="true"]{background:var(--dsw-alias-state-business-primary,#5865f2)}
-    .dpc-switch[aria-checked="true"]:hover{background:var(--dsw-alias-button-primary-hover,#4a56d8)}
-    .dpc-switchKnob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.35);transition:transform .16s ease}
-    .dpc-switch[aria-checked="true"] .dpc-switchKnob{transform:translateX(14px)}
-    .dpc-settings{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 2px}
+    .dpc-switchKnob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-label-primary-inverted,#8a8a8a);transition:transform 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-switch[aria-checked="true"] .dpc-switchKnob{transform:translateX(16px)}
+
+    .dpc-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0}
+    .dpc-row{display:flex;align-items:center;gap:8px;min-height:52px;padding:8px 12px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),opacity 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.28))}
+    .dpc-row:focus-within{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32))}
+    .dpc-row[data-hidden="true"]{opacity:.55}
+    .dpc-row[data-hidden="true"] .dpc-name{color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-row[data-locked="true"]{background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10))}
+    .dpc-grip{display:inline-flex;flex:none;user-select:none;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.6));cursor:grab}
+    .dpc-grip:active{cursor:grabbing}
+    .dpc-pos{flex:none;min-width:16px;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:16px;text-align:right;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.7))}
+    .dpc-glyph{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9))}
+    .dpc-glyph:empty::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.4}
+    .dpc-rowText{display:flex;flex:1 1 auto;flex-direction:column;gap:2px;min-width:0}
+    .dpc-name{font-size:13px;font-weight:500;line-height:18px;max-width:100%;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dpc-key{font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:14px;flex:none;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.7));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dpc-tags{display:flex;flex:none;align-items:center;gap:8px}
+    .dpc-tag{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));white-space:nowrap}
+    .dpc-icon{appearance:none;display:inline-flex;flex:none;align-items:center;justify-content:center;width:24px;height:24px;border:0;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-icon:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-icon:disabled{opacity:.3;cursor:default}
+    .dpc-ico{display:block}
+
+    .dpc-picker{position:relative;display:flex;flex:none}
+    .dpc-pickerBtn{appearance:none;display:inline-flex;align-items:center;gap:8px;height:24px;max-width:144px;padding:0 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10));color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:16px;cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-pickerBtn:hover,.dpc-picker[data-open="true"] .dpc-pickerBtn{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-pickerText{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dpc-caret{flex:none;width:6px;height:6px;margin-top:-2px;border-right:1.2px solid currentColor;border-bottom:1.2px solid currentColor;transform:rotate(45deg);opacity:.7;transition:transform 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-picker[data-open="true"] .dpc-caret{margin-top:2px;transform:rotate(225deg)}
+    .dpc-menu{position:absolute;z-index:50;top:calc(100% + 4px);right:0;display:flex;flex-direction:column;gap:2px;min-width:144px;max-width:240px;padding:4px;background:var(--dsw-alias-bg-elevated,rgba(127,127,127,.18));border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-md,8px);box-shadow:0 8px 24px rgba(0,0,0,.28)}
+    .dpc-option{appearance:none;border:0;padding:4px 8px;border-radius:var(--dsw-radius-xs,4px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .dpc-option:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-option[aria-selected="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 16%,transparent);color:var(--dsw-alias-label-primary-bluish,#7f8fd8)}
+
+    .dpc-section{display:flex;flex-direction:column;gap:8px;padding-top:16px;border-top:.5px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.16))}
+    .dpc-sectionHead{display:flex;align-items:center;justify-content:space-between;gap:16px}
+    .dpc-sectionTitle{margin:0;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-groups{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+    .dpc-group{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 12px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:border-color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-group:hover{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.28))}
+    .dpc-groupDot{flex:none;width:8px;height:8px;border-radius:2px;background:var(--dsw-alias-state-business-primary,#5865f2);opacity:.8}
+    .dpc-groupActions{display:flex;flex:none;align-items:center;gap:8px;margin-left:auto}
+    .dpc-group .dpc-count{min-width:20px;text-align:right}
+    .dpc-input{flex:0 1 auto;width:auto;min-width:96px;max-width:320px;field-sizing:content;height:24px;padding:0 8px;border:.5px solid var(--dsw-alias-border-l1,rgba(127,127,127,.12));border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-primary,#8a8a8a);font:inherit;font-size:12px;line-height:16px;transition:border-color 120ms cubic-bezier(.16,1,.3,1),background-color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-group:hover .dpc-input{border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.24))}
+    .dpc-input:focus{outline:none;border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.36));background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10))}
+
+    .dpc-empty{display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;max-width:520px;margin:0 auto;padding:56px 32px 40px;text-align:center}
+    .dpc-emptyTitle{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+
+    .dpc-diag{padding-top:16px;border-top:.5px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.16))}
+    .dpc-diagSummary{cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-diagSummary:hover{color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+    .dpc-diagList{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,1fr);gap:4px 16px;margin:12px 0 0;font-size:11px;line-height:16px}
+    .dpc-diagList dt{color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-diagList dd{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+    .dpc-mono{font-family:var(--dsw-font-family-code,ui-monospace,monospace)}
+    .dpc-error{color:var(--dsw-alias-state-error-primary,#b45454)}
+
+    .dpc-settings{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0}
     .dpc-settingsText{min-width:0}
-    .dpc-settingsTitle{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary,#ececf1)}
-    .dpc-settingsDesc{margin:2px 0 0;font-size:12px;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.55))}
-    @media (prefers-reduced-motion:reduce){.dpc-row,.dpc-ghost,.dpc-mini,.dpc-eye{transition:none}}
+    .dpc-settingsTitle{font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-settingsDesc{margin:4px 0 0;max-width:62ch;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-primary{appearance:none;flex:none;border:0;padding:4px 12px;border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-button-primary-fill,#5865f2);color:var(--dsw-alias-label-primary-inverted,#8a8a8a);font:inherit;font-size:12px;font-weight:500;line-height:20px;cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-primary:hover{background:var(--dsw-alias-button-primary-hover,#4a56d8)}
+    .dpc-ghost{appearance:none;flex:none;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));padding:3px 10px;border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:20px;cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-ghost:hover:not(:disabled){border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-ghost:disabled{opacity:.4;cursor:default}
+
+    @media (max-width:760px){
+      .dpc-row{flex-wrap:wrap;gap:8px}
+      .dpc-rowText{flex:1 1 120px}
+      .dpc-tags{order:8}
+      .dpc-page{padding-left:16px;padding-right:16px}
+    }
+    @media (prefers-reduced-motion:reduce){
+      .dpc-page{animation:none}
+      .dpc-row,.dpc-group,.dpc-icon,.dpc-link,.dpc-switch,.dpc-switchKnob,.dpc-pickerBtn,.dpc-caret,.dpc-input,.dpc-ghost,.dpc-primary{transition:none}
+    }
   `;
 
   const SIDEBAR_CSS = `
-    .dpc-sep{display:flex;align-items:center;gap:6px;flex:none;padding:8px 8px 1px;font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary,rgba(236,236,241,.42));line-height:14px;pointer-events:none;overflow:hidden;white-space:nowrap}
-    .dpc-sep::after{content:'';flex:1;height:.5px;background:var(--dsw-alias-separator-primary,rgba(255,255,255,.08))}
+    .dpc-sep{display:flex;align-items:center;gap:8px;flex:none;padding:12px 8px 4px;font-size:11px;font-weight:500;line-height:14px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.78));white-space:nowrap;overflow:hidden;pointer-events:none}
+    .dpc-sepLabel{min-width:0;overflow:hidden;text-overflow:ellipsis}
+    .dpc-sep::after{content:'';flex:1;height:.5px;background:var(--dsw-alias-separator-primary,rgba(127,127,127,.16))}
   `;
+
 
   /* ----------------------------------------------------------------- entry */
 
   function applyInner(ctx) {
       ctxRef = ctx;
 
+      // A hot-swapped Client half re-runs apply() without reloading the page, so
+      // the previous sheet is still in <head>: drop it, or two revisions of the
+      // same class names fight over every rule.
+      for (const stale of Array.from(document.querySelectorAll('style[data-dpc-style]'))) stale.remove();
       const style = document.createElement('style');
       style.setAttribute('data-dpc-style', '');
       style.textContent = `${PANEL_CSS}\n${SIDEBAR_CSS}`;
