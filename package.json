@@ -1,6 +1,6 @@
 {
   "name": "dsh-panel-control",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "type": "module",
   "description": "Manage the global panel navigation at the top of the DSH sidebar: reorder, hide and group every entry, with the layout persisted per installation.",
   "keywords": [
@@ -24,7 +24,8 @@
     "docs",
     "icon.svg",
     "index.js",
-    "screenshots.json"
+    "screenshots.json",
+    "scripts"
   ],
   "dsh": {
     "bundle": {

@@ -157,6 +157,8 @@ npm run enable -- --disable    # 三步一起撤掉
 npm run doctor                 # 只检查：每个 bundle 是否都能解析
 ```
 
+（这三个脚本随包发布，装成 npm 包后也能直接跑；`.scratch/harness.html` 只在仓库里。）
+
 `doctor` 也会揪出别的断链插件（指向已删除目录的 `link:` 依赖、名字与 `package.json` 不符的包），它只读真实 profile，不改任何东西。
 
 **二、Node 定时器里的回调没有错误边界。** `setTimeout` / `Promise` 回调不在 Cordis 的 `apply` 调用栈里，那里抛出的异常没人接，就是进程级 fatal。第一个版本正是在 20 秒看门狗里调了一个已被删掉的函数，启动 20 秒后必崩，日志里只留一行「客户端半没上报」。
