@@ -530,12 +530,20 @@ async function watchFirstClientBoot(startedAt) {
       if (!error || error.code !== 'ENOENT') throw error;
     }
     const since = startedAt - 4_000;
-    const reported = text.split(String.fromCharCode(10)).some((line) => {
-      if (!line.includes('"kind":"boot"')) return false;
+    let newest = 0;
+    let reported = false;
+    for (const line of text.split(String.fromCharCode(10))) {
+      if (!line.includes('"kind":"boot"')) continue;
       const stamp = Date.parse(line.slice(0, line.indexOf(' ')));
-      return Number.isFinite(stamp) && stamp >= since;
-    });
+      if (!Number.isFinite(stamp)) continue;
+      if (stamp > newest) newest = stamp;
+      if (stamp >= since) reported = true;
+    }
     if (reported) return;
+    // A page that reported shortly before this apply is an already-running page:
+    // it did load this plugin, and a Host hot swap (which happens on every edit
+    // while developing) must not be reported as "the window never got the code".
+    if (newest >= startedAt - 120_000) return;
     logHost(
       'client half did not report within 12s: the window is running a plugin list from before this code.',
     );
