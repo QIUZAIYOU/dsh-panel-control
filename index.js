@@ -567,6 +567,21 @@ function logInventoryOnApply(scope) {
 const SERVE_CURRENT = String(process.env.DPC_SERVE_CURRENT || '').toLowerCase() !== 'off';
 let servePatched = null;
 let serveLoggedAt = 0;
+/**
+ * Bytes this Host has already served, kept by revision.
+ *
+ * The registry serves a revision only while it is the current one. A page
+ * (or a page rebuilt by another tool) keeps asking for the revision it booted
+ * with, so the copy we handed out is the only thing that can answer it later.
+ * Five revisions is a few hundred kilobytes and covers a run of edits.
+ */
+const servedBytes = new Map();
+const SERVED_BYTES_KEPT = 5;
+
+function revisionOf(url) {
+  const match = /[?&]rev=([A-Za-z0-9._-]+)/.exec(String(url || ''));
+  return match ? match[1] : null;
+}
 
 function serveCurrentRevision(scope) {
   if (!SERVE_CURRENT || servePatched) return;
@@ -576,10 +591,33 @@ function serveCurrentRevision(scope) {
   servePatched = modules;
   modules.bundleResource = async function bundleResourceWithFallback(method, url) {
     const answer = await original(method, url);
+    if (answer && answer.status === 200 && method === 'GET' && String(url || '').includes(PACKAGE)) {
+      const rev = revisionOf(url);
+      if (rev && typeof answer.body === 'string') {
+        servedBytes.delete(rev);
+        servedBytes.set(rev, answer);
+        while (servedBytes.size > SERVED_BYTES_KEPT) {
+          servedBytes.delete(servedBytes.keys().next().value);
+        }
+      }
+    }
     if (answer && answer.status !== 404) return answer;
     try {
       const requested = String(url || '');
       if (!requested.includes(PACKAGE)) return answer;
+      // A revision this Host already handed out outranks the current one: the
+      // page booted with it, and its list will keep naming it.
+      const asked = revisionOf(requested);
+      const remembered = asked ? servedBytes.get(asked) : undefined;
+      if (remembered !== undefined) {
+        if (Date.now() - serveLoggedAt > 30_000) {
+          serveLoggedAt = Date.now();
+          logHost(
+            `served ${PACKAGE} again at revision ${asked}: the page still runs the list it booted with`,
+          );
+        }
+        return method === 'HEAD' ? { ...remembered, body: undefined } : remembered;
+      }
       const graph = typeof modules.graph === 'function' ? modules.graph() : null;
       const rows = graph && Array.isArray(graph.entries) ? graph.entries : [];
       const entry = rows.find((row) => row && row.id === PACKAGE);

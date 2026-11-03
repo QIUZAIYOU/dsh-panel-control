@@ -67,7 +67,9 @@ const clientModulesStub = {
   }),
   async bundleResource(method, url) {
     clientModulesStub.served.push(String(url));
-    if (String(url).includes('rev-now')) return { status: 200, headers: {}, body: 'current' };
+    if (String(url).includes('rev-now') && !clientModulesStub.dropRev) {
+      return { status: 200, headers: { 'content-type': 'text/javascript' }, body: 'current' };
+    }
     return { status: 404 };
   },
 };
@@ -193,6 +195,16 @@ if (route) {
       '/plugins/??dsh-panel-control/client.js&rev=rev-old',
     );
     check('stale revision is served at the current one', stale.status === 200, `status ${stale.status}`);
+    // A revision this Host already handed out must survive the registry
+    // forgetting it: the page keeps asking for the list it booted with.
+    await clientModulesStub.bundleResource('GET', '/plugins/??dsh-panel-control/client.js&rev=rev-now');
+    clientModulesStub.dropRev = true;
+    const remembered = await clientModulesStub.bundleResource(
+      'GET',
+      '/plugins/??dsh-panel-control/client.js&rev=rev-now',
+    );
+    check('a remembered revision is served after the registry drops it', remembered.status === 200, `status ${remembered.status}`);
+    clientModulesStub.dropRev = false;
     const fresh = await clientModulesStub.bundleResource(
       'GET',
       '/plugins/??dsh-panel-control/client.js&rev=rev-now',
