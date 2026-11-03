@@ -359,6 +359,66 @@ async function classify(scope, payload, signal) {
 
 /* -------------------------------------------------------------------- route */
 
+async function handle(scope, request) {
+  if (!isLoopbackRequest(request)) return new Response('forbidden', { status: 403 });
+  if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
+  const contentType = request.headers.get('content-type');
+  if (!contentType || contentType.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+    return new Response('content type must be application/json', { status: 415 });
+  }
+
+  let message;
+  try {
+    message = await request.json();
+  } catch {
+    return new Response('body is not JSON', { status: 400 });
+  }
+  if (JSON.stringify(message).length > MAX_BODY_BYTES) return new Response('body too large', { status: 413 });
+
+  const rpcId = isRecord(message) && typeof message.rpcId === 'string' ? message.rpcId : 'invalid-request';
+  if (
+    !isRecord(message) ||
+    message.type !== 'client-request' ||
+    typeof message.rpcId !== 'string' ||
+    message.method !== ENDPOINT ||
+    !isRecord(message.payload)
+  ) {
+    return reply(rpcId, refusal('gateway/bad-request', 'This is not a panel-control request.'));
+  }
+  const call = message.payload;
+  const method = typeof call.method === 'string' ? call.method : '';
+
+  try {
+    if (method === 'classify') return reply(rpcId, await classify(scope, call.payload, request.signal));
+    if (method === 'load') return reply(rpcId, await loadPreferences());
+    if (method === 'save') return reply(rpcId, await savePreferences(call.payload));
+    if (method === 'inventory') return reply(rpcId, inventorySnapshot(scope));
+    if (method === 'report') {
+      const detail = isRecord(call.payload) ? call.payload : {};
+      const text = JSON.stringify(detail).slice(0, 4_000);
+      logClient(`${typeof detail.kind === 'string' ? detail.kind : 'report'} ${text}`);
+      return reply(rpcId, { ok: true, value: { logged: true } });
+    }
+    return reply(rpcId, refusal('unknown-method', `Unknown method: ${String(call.method)}`));
+  } catch (error) {
+    logHost(`request ${method || '?'} failed: ${describeError(error)}`);
+    return reply(rpcId, refusal('handler-failed', describeError(error)));
+  }
+}
+
+async function loadPreferences() {
+  const prefs = await readPrefsFile();
+  return { ok: true, value: { prefs, file: PREFS_FILE } };
+}
+
+async function savePreferences(payload) {
+  if (!isRecord(payload) || !isRecord(payload.prefs)) {
+    return refusal('bad-request', 'A preferences object is required.');
+  }
+  const bytes = await writePrefsFile(payload.prefs);
+  return { ok: true, value: { saved: true, bytes } };
+}
+
 /**
  * What the Host is serving to pages right now, taken from the same module graph
  * that builds `window.__DSH_BOOT__`. Comparing revisions is the only reliable
@@ -381,6 +441,48 @@ function inventorySnapshot(scope) {
       ids: entries.map((entry) => String(entry && entry.id)).filter(Boolean),
     },
   };
+}
+
+/**
+ * Say it out loud when the page never came back.
+ *
+ * The Host is up (this half ran) and yet the Client half reports nothing: the
+ * window was built from a plugin list that no longer matches the code on disk,
+ * so its script request went nowhere and the page silently omits the entry. The
+ * user sees a plugin that "does not start", so write the diagnosis where it can
+ * be found -- once per launch.
+ *
+ * This runs in a timer, outside every request and outside Cordis' own error
+ * handling: anything thrown here kills the whole Host process. Every branch is
+ * therefore contained, and the caller adds one more net.
+ */
+let watchdogSpoken = false;
+
+async function watchFirstClientBoot(startedAt) {
+  try {
+    // Several applies can share one process (hot swap); only the first one speaks.
+    if (watchdogSpoken) return;
+    watchdogSpoken = true;
+    let text = '';
+    try {
+      text = await fs.readFile(CLIENT_LOG, 'utf8');
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') throw error;
+    }
+    const since = startedAt - 4_000;
+    const reported = text.split(String.fromCharCode(10)).some((line) => {
+      if (!line.includes('"kind":"boot"')) return false;
+      const stamp = Date.parse(line.slice(0, line.indexOf(' ')));
+      return Number.isFinite(stamp) && stamp >= since;
+    });
+    if (reported) return;
+    logHost(
+      'client half did not report within 20s: the window likely booted with a plugin list from before this code. ' +
+        'Press the desktop refresh button (or Ctrl+R) once; open a new window afterwards to confirm.',
+    );
+  } catch (error) {
+    logHost(`client boot watchdog failed: ${describeError(error)}`);
+  }
 }
 
 /** Register the route; returns null while `connection` is not available yet so
@@ -416,7 +518,13 @@ export function apply(ctx) {
     if (dispose) {
       logHost(`route mounted at ${ROUTE_PATH} (attempt ${attempts})`);
       const startedAt = Date.now();
-      const watchdog = setTimeout(() => void watchFirstClientBoot(startedAt), 20_000);
+      // A timer callback that throws is fatal for the Host: contain it here and
+      // again inside the async body.
+      const watchdog = setTimeout(() => {
+        void watchFirstClientBoot(startedAt).catch((error) =>
+          logHost(`client boot watchdog failed: ${describeError(error)}`),
+        );
+      }, 20_000);
       if (typeof watchdog.unref === 'function') watchdog.unref();
       return;
     }
