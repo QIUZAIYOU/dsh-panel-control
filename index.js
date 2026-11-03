@@ -18,6 +18,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PACKAGE = 'dsh-panel-control';
 const ENDPOINT = 'dsh-panel-control/classify';
@@ -38,6 +39,18 @@ const HOST_LOG = path.join(STATE_DIR, 'host.log');
 const CLIENT_LOG = path.join(STATE_DIR, 'client.log');
 const MAX_PREFS_BYTES = 256 * 1024;
 const LOG_KEEP_BYTES = 256 * 1024;
+
+/** The Client half this Host half ships with, used by the recovery nudge below. */
+const CLIENT_FILE = fileURLToPath(new URL('./client.js', import.meta.url));
+
+/** Set `DPC_NUDGE=off` to keep the Host strictly read-only about its own files. */
+const NUDGE_ENABLED = String(process.env.DPC_NUDGE || '').toLowerCase() !== 'off';
+
+/** Set once the nudge below actually rewrote the Client file in this process. */
+let recoveredAt = 0;
+
+/** `String.fromCharCode(10)`: a literal newline in source is easy to mangle. */
+const NL = String.fromCharCode(10);
 
 /** Identifies one Host process, so a log spanning several launches shows which
  * apply/mount lines belong together. */
@@ -439,6 +452,10 @@ function inventorySnapshot(scope) {
       rev: graph.rev,
       release: typeof graph.release === 'string' ? graph.release : null,
       ids: entries.map((entry) => String(entry && entry.id)).filter(Boolean),
+      // True when this process had to hand itself to the page: the page's list is
+      // still stale, but the entry it lacks is this very plugin, so there is
+      // nothing left for the user to do.
+      recovered: recoveredAt > 0,
     },
   };
 }
@@ -477,9 +494,28 @@ async function watchFirstClientBoot(startedAt) {
     });
     if (reported) return;
     logHost(
-      'client half did not report within 20s: the window likely booted with a plugin list from before this code. ' +
-        'Press the desktop refresh button (or Ctrl+R) once; open a new window afterwards to confirm.',
+      'client half did not report within 20s: the window is running a plugin list from before this code.',
     );
+    // The page will not ask for a script that is not in its frozen list, but it
+    // does watch this package's files: one byte-level change to the Client entry
+    // makes the loader hand the module to the live page. Flip the trailing
+    // newline, so the file stays byte-stable instead of growing on every launch.
+    if (!NUDGE_ENABLED) {
+      logHost('recovery nudge disabled by DPC_NUDGE=off; the entry stays hidden until the page reloads');
+      return;
+    }
+    try {
+      const source = await fs.readFile(CLIENT_FILE, 'utf8');
+      const next = source.endsWith(NL + NL) ? source.slice(0, -1) : source + NL;
+      await fs.writeFile(CLIENT_FILE, next, 'utf8');
+      recoveredAt = Date.now();
+      logHost(
+        `recovery nudge: rewrote ${path.basename(CLIENT_FILE)} (${next.length - source.length} byte) so the ` +
+          'loader hands this plugin to the running page; the sidebar entry should appear within a second',
+      );
+    } catch (error) {
+      logHost(`recovery nudge failed: ${describeError(error)}`);
+    }
   } catch (error) {
     logHost(`client boot watchdog failed: ${describeError(error)}`);
   }

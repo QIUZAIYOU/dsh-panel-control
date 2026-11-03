@@ -18,6 +18,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const override = process.argv[2];
 const MODULE = pathToFileURL(override ? path.resolve(override) : path.join(here, '..', 'index.js')).href;
 
+// The recovery nudge rewrites the real client.js when a page never reports; the
+// harness must stay read-only about the checkout.
+process.env.DPC_NUDGE = 'off';
+
 const timers = [];
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = (fn, ms, ...rest) => {
@@ -122,6 +126,17 @@ for (const timer of timers) {
     check(`timer(${timer.ms}ms) survived`, false, error.message);
   }
 }
+// The nudge is the one timer body that writes to the checkout: prove that the
+// harness, and any Host started with DPC_NUDGE=off, leaves client.js alone.
+{
+  const fs = await import('node:fs/promises');
+  const clientPath = path.join(here, '..', 'client.js');
+  const before = await fs.readFile(clientPath, 'utf8');
+  await new Promise((resolve) => realSetTimeout(resolve, 120));
+  const after = await fs.readFile(clientPath, 'utf8');
+  check('client.js untouched with DPC_NUDGE=off', before === after, `${before.length} -> ${after.length}`);
+}
+
 // Give the async timer bodies a beat to settle.
 await new Promise((resolve) => realSetTimeout(resolve, 150));
 

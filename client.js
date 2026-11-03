@@ -284,7 +284,12 @@ function build(require) {
       return;
     }
     const missing = hostIds.filter((id) => !boot.ids.has(id));
-    const stale = missing.length > 0 || rev !== boot.rev;
+    // The Host can hand this very plugin to a page whose list predates it (see
+    // `recovery nudge` in the Host half). In that case the page is still missing
+    // an entry, but it is this one and it is already on screen: nagging the user
+    // to reload for it would be noise. Every other gap still counts.
+    const selfOnly = missing.length === 1 && missing[0] === PACKAGE && value.recovered === true;
+    const stale = !selfOnly && (missing.length > 0 || rev !== boot.rev);
     setState({ inventory: { status: 'done', stale, missing, rev, bootRev: boot.rev, at: Date.now() } });
   }
 
