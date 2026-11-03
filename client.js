@@ -340,11 +340,6 @@ function build(require) {
       return;
     }
     const missing = hostIds.filter((id) => !boot.ids.has(id));
-    // The Host can hand this very plugin to a page whose list predates it (see
-    // `recovery nudge` in the Host half). In that case the page is still missing
-    // an entry, but it is this one and it is already on screen: nagging the user
-    // to reload for it would be noise. Every other gap still counts.
-    const selfOnly = missing.length === 1 && missing[0] === PACKAGE && value.recovered === true;
     // Only a real gap is worth a banner. A revision that merely differs proves
     // nothing: the Host rebuilds that graph whenever any plugin file changes, so
     // comparing revisions nagged people whose page was missing nothing at all.
@@ -353,7 +348,7 @@ function build(require) {
     // Already said on an earlier load and a reload did not help: keep quiet, the
     // diagnostics still list it.
     const repeated = gap.length > 0 && readNagged() === gap;
-    const stale = !selfOnly && missing.length > 0 && !repeated;
+    const stale = missing.length > 0 && !repeated;
     if (stale) rememberNagged(gap);
     else if (!missing.length) rememberNagged('');
     if (!stale) forgetReloadMark();
