@@ -63,8 +63,8 @@ function build(require) {
     ungrouped: { zh: '未分组', en: 'Ungrouped' },
     groupsTitle: { zh: '分组', en: 'Groups' },
     groupsHint: {
-      zh: '分组会在侧栏导航区里显示成带标题的分隔线，同一组的入口会被排在一起；侧栏折叠成图标条时不显示标题。',
-      en: 'A group renders as a titled separator in the sidebar, and its entries are kept together. Headings are hidden while the sidebar is collapsed to the icon rail.',
+      zh: '分组会在侧栏导航区里显示成带标题的分隔线，同一组的入口会被排在一起；这里的上下顺序就是侧栏里的顺序，拖动行可以调整。',
+      en: 'A group renders as a titled separator in the sidebar and keeps its entries together. The order here is the order in the sidebar — drag a row to change it.',
     },
     newGroup: { zh: '新建分组', en: 'New group' },
     newGroupName: { zh: '新分组', en: 'New group' },
@@ -747,12 +747,22 @@ function build(require) {
     commit({ ...prefsNow(), order });
   }
 
+  // Move fromId in front of targetId. Shared by the entry list and the group
+  // list so both sections reorder by exactly the same rule.
+  function reorderList(list, fromId, targetId) {
+    const from = list.indexOf(fromId);
+    if (from < 0 || list.indexOf(targetId) < 0 || fromId === targetId) return null;
+    const next = list.slice();
+    const [moved] = next.splice(from, 1);
+    // Dropping onto a row means "put it in front of that row", so the target
+    // index has to be read after the item left the list.
+    next.splice(next.indexOf(targetId), 0, moved);
+    return next;
+  }
+
   function moveBefore(fromId, targetId) {
-    const order = orderNow().slice();
-    const from = order.indexOf(fromId);
-    const to = order.indexOf(targetId);
-    if (from < 0 || to < 0 || from === to) return;
-    order.splice(to, 0, order.splice(from, 1)[0]);
+    const order = reorderList(orderNow(), fromId, targetId);
+    if (!order) return;
     commit({ ...prefsNow(), order });
   }
 
@@ -810,6 +820,13 @@ function build(require) {
     if (from < 0 || to < 0 || to >= groups.length) return;
     groups.splice(to, 0, groups.splice(from, 1)[0]);
     commit({ ...prefsNow(), groups });
+  }
+
+  function moveGroupBefore(fromId, targetId) {
+    const groups = reorderList((prefsNow().groups || []).map((group) => group.id), fromId, targetId);
+    if (!groups) return;
+    const byId = new Map((prefsNow().groups || []).map((group) => [group.id, group]));
+    commit({ ...prefsNow(), groups: groups.map((id) => byId.get(id)) });
   }
 
   function removeGroup(groupId) {
@@ -1134,6 +1151,8 @@ function build(require) {
     const entries = state.entries;
     const engine = engineRef;
     const dragRef = React.useRef(null);
+    const [rowDrag, setRowDrag] = React.useState({ from: null, over: null });
+    const [groupDrag, setGroupDrag] = React.useState({ from: null, over: null });
 
     React.useEffect(() => {
       if (engine) engine.refresh();
@@ -1280,8 +1299,11 @@ function build(require) {
           'data-hidden': isHidden ? 'true' : 'false',
           'data-locked': locked ? 'true' : 'false',
           draggable: true,
+          'data-dragging': rowDrag.from === id ? 'true' : 'false',
+          'data-over': rowDrag.over === id && rowDrag.from !== id ? 'true' : 'false',
           onDragStart: (event) => {
             dragRef.current = id;
+            setRowDrag({ from: id, over: null });
             try {
               event.dataTransfer.effectAllowed = 'move';
               event.dataTransfer.setData('text/plain', id);
@@ -1291,15 +1313,18 @@ function build(require) {
           },
           onDragOver: (event) => {
             event.preventDefault();
+            setRowDrag((prev) => (prev.over === id ? prev : { ...prev, over: id }));
           },
           onDrop: (event) => {
             event.preventDefault();
             const from = dragRef.current;
             dragRef.current = null;
+            setRowDrag({ from: null, over: null });
             if (from && from !== id) moveBefore(from, id);
           },
           onDragEnd: () => {
             dragRef.current = null;
+            setRowDrag({ from: null, over: null });
           },
         },
         h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
@@ -1343,7 +1368,36 @@ function build(require) {
       const members = order.filter((id) => (prefs.assign[id] || '') === group.id);
       return h(
         'li',
-        { key: group.id, className: 'dpc-group' },
+        {
+          key: group.id,
+          className: 'dpc-group',
+          draggable: true,
+          'data-dragging': groupDrag.from === group.id ? 'true' : 'false',
+          'data-over': groupDrag.over === group.id && groupDrag.from !== group.id ? 'true' : 'false',
+          onDragStart: (event) => {
+            setGroupDrag({ from: group.id, over: null });
+            try {
+              event.dataTransfer.effectAllowed = 'move';
+              event.dataTransfer.setData('text/plain', group.id);
+            } catch {
+              /* older engines refuse writes */
+            }
+          },
+          onDragOver: (event) => {
+            event.preventDefault();
+            setGroupDrag((prev) => (prev.over === group.id ? prev : { ...prev, over: group.id }));
+          },
+          onDrop: (event) => {
+            event.preventDefault();
+            const from = groupDrag.from;
+            setGroupDrag({ from: null, over: null });
+            if (from && from !== group.id) moveGroupBefore(from, group.id);
+          },
+          onDragEnd: () => {
+            setGroupDrag({ from: null, over: null });
+          },
+        },
+        h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
         h('span', { className: 'dpc-groupDot', 'aria-hidden': true }),
         h('input', {
           className: 'dpc-input',
@@ -1502,6 +1556,10 @@ function build(require) {
     .dpc-row{display:flex;align-items:center;gap:8px;min-height:52px;padding:8px 12px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),opacity 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.28))}
     .dpc-row:focus-within{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32))}
+    .dpc-row[data-dragging="true"],.dpc-group[data-dragging="true"]{opacity:.45}
+    .dpc-row[data-over="true"],.dpc-group[data-over="true"]{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.10))}
+    .dpc-grip{cursor:grab}
+    .dpc-grip:active{cursor:grabbing}
     .dpc-row[data-hidden="true"]{opacity:.55}
     .dpc-row[data-hidden="true"] .dpc-name{color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
     .dpc-row[data-locked="true"]{background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10))}
@@ -1535,7 +1593,7 @@ function build(require) {
     .dpc-sectionHead{display:flex;align-items:center;justify-content:space-between;gap:16px}
     .dpc-sectionTitle{margin:0;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
     .dpc-groups{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
-    .dpc-group{display:flex;align-items:center;gap:8px;min-height:44px;padding:8px 12px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:border-color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-group{display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px 6px 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),opacity 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-group:hover{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.28))}
     .dpc-groupDot{flex:none;width:8px;height:8px;border-radius:2px;background:var(--dsw-alias-state-business-primary,#5865f2);opacity:.8}
     .dpc-groupActions{display:flex;flex:none;align-items:center;gap:8px;margin-left:auto}
@@ -1667,7 +1725,7 @@ function build(require) {
   return {
     inject: ['slots'],
     // Pure helpers the browser harness drives directly, without a Cordis context.
-    testables: { createEngine, readEntries, normalize, sanitize, store, applyInner, setCtx: (value) => { ctxRef = value; } },
+    testables: { createEngine, readEntries, normalize, sanitize, store, reorderList, applyInner, setCtx: (value) => { ctxRef = value; } },
     apply(ctx) {
       try {
         applyInner(ctx);
