@@ -54,5 +54,9 @@
     "smoke": "node scripts/host-smoke.mjs",
     "doctor": "node scripts/profile-doctor.mjs",
     "enable": "node scripts/enable-local.mjs"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   }
 }
