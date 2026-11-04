@@ -31,6 +31,23 @@
 
 ## 安装
 
+### 从 npm 安装（推荐）
+
+```bash
+cd C:/Users/<you>/.dsh/profiles/desktop
+npm install dsh-panel-control@0.7.1
+```
+
+然后把包名加进同一个文件里的 `dsh.profile.bundles`（`C:/Users/<you>/.dsh/profiles/desktop/package.json`）：
+
+```jsonc
+"dsh": { "profile": { "bundles": [ ..., "dsh-panel-control" ] } }
+```
+
+`npm install` 会把包和包里的 `client.js` / `cordis.patch.yml` 一起放进 profile 的 `node_modules`，不需要再建目录链接。
+
+### 本地开发（link: 指向工作副本）
+
 ```bash
 # 1. 放进全局 profile（本地开发用 link:）
 #    C:/Users/<you>/.dsh/profiles/desktop/package.json
@@ -193,3 +210,23 @@ npm run smoke -- <文件>        # 跑别的副本，用来复现回归
 - 宿主若改动 `panelList` 的 class 命名或行结构，需要同步更新选择器；已做多级回退，但仍是 DOM 适配层。
 - 隐藏/分组只影响本机这份侧栏渲染，不改动任何插件自身配置。
 - 插件销毁时移除注入的 `style` 节点、observer 与轮询定时器；布局存在 `~/.dsh/panel-control/prefs.json`，重装或重启后接着用（想清空就在面板里点「恢复默认」，或直接删掉这个文件）。
+
+## 侧栏导航溢出兜底（0.7.0，对应讨论 #12083）
+
+官方 `dsh-client-ui-sidebar` 把导航列表设成 `flex:none`、把下方的会话/工作区设成
+`flex:1;overflow:hidden`。导航项一多，列表按内容高度吃满，下面的区域被压成 0 高且没有可滚动的容器
+（[讨论 #12083](https://github.com/deepseek-ai/deepseek-harness/discussions/12083)）。本插件不改官方包，
+只在页面上给两个节点加上自己的属性钩子，再用一段 CSS 兜底：
+
+| 钩子 | 写在哪 | 作用 |
+| --- | --- | --- |
+| `data-dpc-list` | 导航列表（`[class*="panelList"]`） | `flex:0 1 auto`、`min-height:0`、`overflow-y:auto`、`max-height:max(120px,var(--dpc-panellist-max,45vh))` |
+| `data-dpc-unbounded` | 同上（上限设为「不限」时） | 取消 `max-height`，仍保留滚动 |
+| `data-dpc-region` | 列表父容器里的 `[class*="regionArea"]` | `flex:1 1 auto;min-height:min(120px,18vh)`，保证永远留得下会话区 |
+
+设置页新增「侧栏布局」卡片：高度兜底开关、高度上限（35/45/55/不限）、分组折叠开关、全部收起/展开。
+关掉兜底后两个属性都会被移除，侧栏回到官方原本的样子；`destroy()` 也会清理它们，不会留在一个别人的 DOM 上。
+
+分组标题同时是折叠按钮：`role="button"`、`tabindex="0"`、`aria-expanded`，点一下或按 Enter/空格收起该组，
+标题和数量仍保留（否则折叠后就找不到回来的入口）。折叠状态存在 `prefs.collapsed`，和排序、隐藏一样跟着
+设置文件走。窄侧栏（<64px）不渲染标题，也不应用折叠。

@@ -29,6 +29,9 @@ const MODULE = pathToFileURL(override ? path.resolve(override) : path.join(here,
 // The recovery nudge rewrites the real client.js when a page never reports; the
 // harness must stay read-only about the checkout.
 process.env.DPC_NUDGE = 'off';
+// Rescue-by-current-revision is an explicit opt-in now: the pages below exercise
+// it deliberately, while the default path is asserted later.
+process.env.DPC_SERVE_CURRENT = 'on';
 
 const timers = [];
 const realSetTimeout = globalThis.setTimeout;
@@ -62,6 +65,10 @@ const clientModulesStub = {
       { id: 'a' },
       { id: 'b' },
       { id: 'dsh-panel-control', rev: 'rev-now', url: 'plugins/??dsh-panel-control/client.js&rev=rev-now' },
+      // The plugin that sits next to this one in the real profile: it carries no
+      // fallback of its own, so a retired revision used to drop it silently
+      // while the manager still reported it running.
+      { id: 'dsh-workspace-control', rev: 'rev-now', url: 'plugins/??dsh-workspace-control/client.js&rev=rev-now' },
     ],
     batches: [],
   }),
@@ -195,6 +202,19 @@ if (route) {
       '/plugins/??dsh-panel-control/client.js&rev=rev-old',
     );
     check('stale revision is served at the current one', stale.status === 200, `status ${stale.status}`);
+    // A combo is the batch the page booted with. Answering it with this one
+    // module's bytes registers this plugin and silently drops every other module
+    // in the batch -- the page then runs one plugin instead of the list it
+    // booted with. The stale combo has to stay a 404.
+    const staleCombo = await clientModulesStub.bundleResource(
+      'GET',
+      '/plugins/??a/client.js,b/client.js,dsh-panel-control/client.js&rev=rev-old-combo',
+    );
+    check(
+      'a stale combo is not answered with the single bundle',
+      staleCombo.status === 404,
+      `status ${staleCombo.status}`,
+    );
     // A revision this Host already handed out must survive the registry
     // forgetting it: the page keeps asking for the list it booted with.
     await clientModulesStub.bundleResource('GET', '/plugins/??dsh-panel-control/client.js&rev=rev-now');
@@ -211,11 +231,23 @@ if (route) {
     );
     check('current revision passes straight through', fresh.status === 200, `status ${fresh.status}`);
     const other = await clientModulesStub.bundleResource('GET', '/plugins/??someone-else/client.js&rev=old');
-    check('other packages keep their 404', other.status === 404, `status ${other.status}`);
+    check('packages outside the graph keep their 404', other.status === 404, `status ${other.status}`);
+    // The reported bug: a *neighbouring* plugin on a retired revision. Our
+    // bundle loaded, theirs 404'd, and it vanished from the page while the
+    // manager kept saying "running". One fallback for the whole list fixes it.
+    const neighbour = await clientModulesStub.bundleResource(
+      'GET',
+      '/plugins/??dsh-workspace-control/client.js&rev=rev-old',
+    );
+    check(
+      'a neighbouring plugin is served at the current revision too',
+      neighbour.status === 200,
+      `status ${neighbour.status}`
+    );
     check(
       'inventory ids',
       Array.isArray(body.result.value.ids) &&
-        body.result.value.ids.join() === 'a,b,dsh-panel-control',
+        body.result.value.ids.join() === 'a,b,dsh-panel-control,dsh-workspace-control',
       body.result.value && body.result.value.ids.join(),
     );
   } catch (error) {
@@ -258,6 +290,17 @@ if (route) {
     check('custom-protocol page allowed', response.ok === true && body.result && body.result.ok === true);
   } catch (error) {
     check('custom-protocol page allowed', false, error.message);
+  }
+  // The desktop dev-proxy serves the page from a reserved .invalid origin; the
+  // page is still ours, so its calls must not be refused.
+  try {
+    const response = await route.fetch(
+      request(envelope('inventory'), { host: 'unlag.invalid', origin: 'http://unlag.invalid' }),
+    );
+    const body = await response.json();
+    check('dev-proxy page allowed', response.ok === true && body.result && body.result.ok === true, String(response.status));
+  } catch (error) {
+    check('dev-proxy page allowed', false, error.message);
   }
   // An oversized body is refused before it is parsed.
   try {

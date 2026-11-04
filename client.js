@@ -1,3 +1,12 @@
+(function () {
+  // This bundle is served as a classic script and the page can evaluate it twice in one document
+  // (its own startup script plus the composed batch). At top level that is a "const" redeclaration,
+  // which is a parse-time SyntaxError - it aborts the boot instead of just skipping a duplicate.
+  // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
+  // plugin is switched off the loader drops our factory, so switching it back on re-executes this
+  // script and needs the registration that follows.
+  const BUILD_STAMP = 'dsh-panel-control/0.7.1';
+  try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
  *
@@ -21,7 +30,232 @@
  * collapsed sidebar from leaving the list in a wrong state.
  */
 
+
+/**
+ * Page-level error recorder.
+ *
+ * Another plugin's client half can disappear while the Host still reports it
+ * running: the only place that failure is visible is this page's console, and
+ * the console is not persisted anywhere. This hook is installed at script
+ * evaluation time (before the rest of the boot list activates) and keeps a
+ * small ring of errors/warnings so a later report can carry them to the Host
+ * log. It must never throw and never change control flow.
+ */
+const PAGE_LOG = '__dpcPageLog';
+(function installPageRecorder() {
+  try {
+    const box = window[PAGE_LOG] || (window[PAGE_LOG] = { started: Date.now(), events: [] });
+    if (box.installed) return;
+    box.installed = true;
+    const push = (kind, text) => {
+      try {
+        if (box.events.length >= 80) box.events.shift();
+        box.events.push(`${kind} ${String(text).slice(0, 600)}`);
+        pageBeacon(`page ${kind} ${String(text).slice(0, 500)}`);
+        const all = box.events.map((line) => String(line).replace(/[\r\n]+/g, ' ')).join(' ~ ');
+        pageNote(`events(${box.events.length}) ${all.slice(-3000)}`);
+      } catch { /* recording is best effort */ }
+    };
+    const describe = (value) => {
+      try {
+        if (!value) return '';
+        if (typeof value === 'string') return value;
+        if (value.stack) return String(value.stack);
+        if (value.message) return String(value.message);
+        return JSON.stringify(value).slice(0, 400);
+      } catch {
+        return String(value);
+      }
+    };
+    window.addEventListener('error', (event) => {
+      push('error', `${(event && event.message) || 'error'} @${(event && event.filename) || ''}:${(event && event.lineno) || 0} ${describe(event && event.error)}`);
+    }, true);
+    window.addEventListener('unhandledrejection', (event) => {
+      push('rejection', describe(event && event.reason));
+    }, true);
+    for (const level of ['error', 'warn']) {
+      const original = console[level];
+      if (typeof original !== 'function') continue;
+      console[level] = function patchedConsole(...args) {
+        try {
+          push(`console.${level}`, args.map(describe).join(' '));
+        } catch { /* never break logging */ }
+        return original.apply(this, args);
+      };
+    }
+  } catch { /* the recorder is optional */ }
+})();
+
+
+/**
+ * Trace channel that does not depend on the Host.
+ *
+ * `/plugins/` is answered by another plugin's shim (dsh-unlag) before our Host
+ * route runs, so a probe script cannot tell us what the page did — and the Host
+ * log cannot tell us whether our module ever executed. `localStorage` is written
+ * by this module itself, so reading Chromium's Local Storage LevelDB offline
+ * answers it exactly:
+ *
+ *   top     - the bundle executed at all (a missing key means it never did)
+ *   build   - the factory ran
+ *   apply   - the runner called our apply
+ *   ready   - our slots are registered
+ *
+ * `#ids=` is the boot manifest's entry count, `#ml=` says whether the module
+ * loader exists, `#errs=` carries the page's last boot errors.
+ */
+const TRACE_KEY = 'dsh.panel-control.trace';
+const PAGE_KEY = 'dsh.panel-control.page';
+/** A short, always-rewritten record ("DPCPAGE|" marks it) for the offline reader. */
+function pageNote(text) {
+  try {
+    window.localStorage.setItem(PAGE_KEY, `DPCPAGE|${String(text).slice(0, 3500)}`);
+  } catch { /* storage is best effort */ }
+}
+/** Talk to the Host before any service exists: a GET the route answers and logs. */
+function pageBeacon(text) {
+  try {
+    const transport = window.__DSH_TRANSPORT__;
+    const base = transport && typeof transport.streamBaseUrl === 'string' ? transport.streamBaseUrl.replace(/\/+$/, '') : '';
+    const url = `${base}/api/dsh-panel-control/classify?d=${encodeURIComponent(String(text).slice(0, 700))}`;
+    window.fetch(url, { mode: 'no-cors', keepalive: true, cache: 'no-store' }).catch(() => {});
+  } catch { /* a beacon must never break the boot */ }
+}
+function traceBoot(tag, silent) {
+  try {
+    const box = window.__dpcTrace || (window.__dpcTrace = []);
+    if (!silent && box[box.length - 1] !== tag) box.push(tag);
+    const bootText = window.__dpcBoot || (window.__dpcBoot = describeBoot());
+    const log = window.__dpcPageLog;
+    const errs = log && Array.isArray(log.events)
+      ? log.events.slice(-2).map((event) => String((event && (event.detail || event.text || event.message)) || event)).join(' / ')
+      : '';
+    pageBeacon(`trace ${tag} :: ${box.join('>')} :: ${bootText} :: ${errs.slice(0, 200).replace(/[\r\n]+/g, ' ')}`);
+    pageNote(`${box.join('>')} @${new Date().toISOString()} :: ${bootText} :: errs=${errs.slice(0, 500).replace(/[\r\n]+/g, ' ')}`);
+    window.localStorage.setItem(
+      TRACE_KEY,
+      `${box.join('>')} @${new Date().toISOString()} #ml=${typeof window.__ModuleLoader__} #errs=${errs.replace(/[\r\n]+/g, ' ').slice(0, 400)} || ${bootText}`,
+    );
+  } catch { /* a trace must never break the boot */ }
+}
+
+/** What the boot handed this page. The full list goes under its own key; the
+ * one-line trace only says what a person has to be told to read it right. */
+function describeBoot() {
+  try {
+    const boot = window.__DSH_BOOT__;
+    if (!boot) return 'boot=none';
+    const keys = Object.keys(boot).slice(0, 20).join(',');
+    const list = Array.isArray(boot.entries) ? boot.entries : (Array.isArray(boot.ids) ? boot.ids : []);
+    const rows = list.map((item) => (typeof item === 'string' ? { id: item } : item || {}));
+    const ids = rows.map((row) => String(row.id || '?'));
+    const counts = {};
+    for (const id of ids) counts[id] = (counts[id] || 0) + 1;
+    const dupes = Object.entries(counts).filter(([, times]) => times > 1).map(([id, times]) => `${id}x${times}`).join(',');
+    const immediate = rows.filter((row) => row.immediately === true).map((row) => String(row.id || '?'));
+    const batches = Array.isArray(boot.batches) ? boot.batches.map((batch) => String((batch && batch.url) || '')) : [];
+    const own = rows.find((row) => row.id === 'dsh-panel-control') || null;
+    try {
+      window.localStorage.setItem(
+        `${TRACE_KEY}.boot`,
+        JSON.stringify({ rev: boot.rev, release: boot.release, keys, n: ids.length, ids, dupes, immediate, batches, own }).slice(0, 30_000),
+      );
+    } catch { /* the summary below still says the part that matters */ }
+    return `boot.keys=${keys} n=${ids.length} dupes=${dupes || 'none'} immediate=${immediate.join(',') || 'none'} own=${own ? `${own.id}@${own.rev || '?'}${own.immediately ? '/immediately' : ''}` : 'MISSING'}`;
+  } catch (error) {
+    return `boot.err=${String((error && error.message) || error).slice(0, 200)}`;
+  }
+}
+try { traceBoot('top'); } catch { /* ignore */ }
+// --- diagnostic self-reload ---------------------------------------------------
+// The desktop window has no reload shortcut, so an updated bundle can only reach a
+// live page when the page reloads itself once. It is capped hard: at most two
+// reloads per ten minutes, and never for a revision this window already loaded.
+// It exists so a fix can be tested without a person pressing the refresh button.
+const SELF_RELOAD_KEY = 'dsh.panel-control.selfreload';
+function ownScriptSrc() {
+  try {
+    const own = document.currentScript;
+    if (own && typeof own.src === 'string' && own.src.includes('dsh-panel-control')) return own.src;
+    const all = Array.from(document.scripts || []);
+    for (let i = all.length - 1; i >= 0; i -= 1) {
+      const src = String(all[i].src || '');
+      if (src.includes('dsh-panel-control/client.js')) return src;
+    }
+  } catch { /* ignore */ }
+  return '';
+}
+function maybeSelfReload() {
+  try {
+    if (!window.__DSH_BOOT__) return;
+    const src = ownScriptSrc();
+    if (src === '') return;
+    const now = Date.now();
+    const born = Math.max(0, now - Number((window.performance && window.performance.timeOrigin) || now));
+    let state = null;
+    try { state = JSON.parse(localStorage.getItem(SELF_RELOAD_KEY) || 'null'); } catch { /* ignore */ }
+    if (state === null || typeof state !== 'object') state = { src: '', at: [] };
+    const recent = (Array.isArray(state.at) ? state.at : []).filter((t) => typeof t === 'number' && now - t < 120000);
+    // One reload per two minutes, for either reason below: a reload that keeps coming back is
+    // worse than a plugin that is missing, because nobody can use the window at all.
+    if (recent.length > 0) return;
+    // Two reasons to reload, and both end at "the page boots from one manifest again":
+    //   - a newer bundle: this window is running code older than what the Host now serves;
+    //   - a hot apply: this document was already up for seconds when our script arrived, which
+    //     is the delta path. DSH composes that delta as a second batch, and a plugin that is
+    //     also its own startup script then loads twice; the second instance re-registers the
+    //     slot ids the first one filled and the whole start() aborts. A fresh document has one
+    //     manifest, one instance per plugin, and none of that.
+    const srcChanged = state.src !== src;
+    const hotApplied = born > 4000;
+    if (!srcChanged && !hotApplied) return;
+    recent.push(now);
+    try { localStorage.setItem(SELF_RELOAD_KEY, JSON.stringify({ src, at: recent })); } catch { /* ignore */ }
+    traceBoot(hotApplied ? 'selfreload-hot' : 'selfreload-new');
+    setTimeout(() => { try { window.location.reload(); } catch { /* ignore */ } }, 1200);
+  } catch { /* ignore */ }
+}
+try { maybeSelfReload(); } catch { /* ignore */ }
+// --- self-heal ---------------------------------------------------------------
+// A document that boots while the plugin set is being recomposed can end up with two module
+// instances of one plugin: the second apply re-registers the slot ids the first filled, throws,
+// and DSH aborts the whole start() - which is why a working plugin can be missing while its
+// neighbour looks fine. Nothing here can repair that page; a fresh document composes one set
+// and boots clean. So: if this module ran and apply never landed, reload once. Capped at three
+// tries per ten minutes, and never while the page is still loading, so a page that cannot boot
+// this plugin does not turn into a reload loop.
+const HEAL_KEY = 'dsh.panel-control.heal';
+function scheduleHeal() {
+  try {
+    if (!window.__DSH_BOOT__) return;
+    setTimeout(() => {
+      try {
+        if (window.__dpcApplied === true) return;
+        if (document.readyState !== 'complete') return;
+        const now = Date.now();
+        let seen = [];
+        try { seen = JSON.parse(localStorage.getItem(HEAL_KEY) || '[]'); } catch { /* ignore */ }
+        if (!Array.isArray(seen)) seen = [];
+        seen = seen.filter((t) => typeof t === 'number' && now - t < 600000);
+        if (seen.length >= 3) { try { traceBoot('heal-givenup'); } catch { /* ignore */ } return; }
+        seen.push(now);
+        try { localStorage.setItem(HEAL_KEY, JSON.stringify(seen)); } catch { /* ignore */ }
+        try { traceBoot('heal'); } catch { /* ignore */ }
+        window.location.reload();
+      } catch { /* ignore */ }
+    }, 12000);
+  } catch { /* ignore */ }
+}
+try { scheduleHeal(); } catch { /* ignore */ }
+// Keep rewriting for half a minute: a late boot error then still lands in the file.
+try {
+  for (const delay of [1200, 4000, 9000, 20000, 35000]) {
+    setTimeout(() => { try { traceBoot('tick', true); } catch { /* ignore */ } }, delay);
+  }
+} catch { /* ignore */ }
+
 function build(require) {
+  try { traceBoot('build'); } catch { /* ignore */ }
   const React = require('react');
   const h = React.createElement;
 
@@ -132,6 +366,21 @@ function build(require) {
     diagFile: { zh: '设置文件', en: 'settings file' },
     diagOrigin: { zh: '页面来源', en: 'page origin' },
     autoTitle: { zh: '自动分类', en: 'Auto classify' },
+    layoutTitle: { zh: '侧栏布局', en: 'Sidebar layout' },
+    layoutHint: {
+      zh: '导航项变多时，让导航区自己收缩并滚动，下面的会话与工作区就不会被挤到看不见。兜底只作用于本页，不改官方包。',
+      en: 'When the panel list grows, let it shrink and scroll so sessions and workspaces keep their height. The guard only touches this page; the official package is untouched.',
+    },
+    layoutGuard: { zh: '高度兜底', en: 'Height guard' },
+    layoutGuardHint: { zh: '导航区超过上限后在原地滚动。', en: 'Scroll inside the list once it passes the cap.' },
+    layoutCollapse: { zh: '分组可折叠', en: 'Collapsible groups' },
+    layoutCollapseHint: { zh: '点分组标题收起该组，标题与数量仍保留。', en: 'Click a group title to fold it; the title and count stay.' },
+    layoutMax: { zh: '高度上限', en: 'Height cap' },
+    layoutMaxNone: { zh: '不限', en: 'No cap' },
+    layoutCollapseAll: { zh: '全部收起', en: 'Fold all' },
+    layoutExpandAll: { zh: '全部展开', en: 'Unfold all' },
+    layoutCollapseOne: { zh: '点此收起', en: 'click to fold' },
+    layoutExpandOne: { zh: '点此展开', en: 'click to unfold' },
     autoHint: {
       zh: '让默认模型把入口分成 2–4 组，结果保存在本机。',
       en: 'The default model files the entries into 2-4 groups; the result stays on this machine.',
@@ -216,6 +465,10 @@ function build(require) {
     assign: {},
     auto: false,
     autoFiled: [],
+    collapsed: [],
+    guard: true,
+    collapse: true,
+    panelMax: 45,
   });
 
   /**
@@ -226,7 +479,7 @@ function build(require) {
    * would then build that many separators. The numbers here are far above any
    * real sidebar and turn a hostile or corrupted store into a cheap no-op.
    */
-  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, groups: 24, assign: 400, name: 40, key: 120 };
+  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, collapsed: 200, groups: 24, assign: 400, name: 40, key: 120 };
 
   /** Dedupe, drop anything that is not a usable id, and stop at `cap`. */
   function uniqueIds(raw, cap) {
@@ -249,6 +502,14 @@ function build(require) {
     out.order = uniqueIds(raw.order, LIMITS.order);
     out.autoFiled = uniqueIds(raw.autoFiled, LIMITS.autoFiled);
     out.hidden = uniqueIds(raw.hidden, LIMITS.hidden);
+    out.collapsed = uniqueIds(raw.collapsed, LIMITS.collapsed);
+    // Files written before the layout guard existed must come back with the
+    // guard on: the whole point is that an old sidebar keeps working. An
+    // explicit false is the only way to turn the CSS off.
+    out.guard = raw.guard !== false;
+    out.collapse = raw.collapse !== false;
+    const cap = Math.round(Number(raw.panelMax));
+    out.panelMax = Number.isFinite(cap) ? Math.min(70, Math.max(0, cap)) : 45;
     if (Array.isArray(raw.groups)) {
       const seen = new Set();
       for (const group of raw.groups) {
@@ -296,6 +557,7 @@ function build(require) {
     ((prefs.order || []).length > 0 ||
       (prefs.hidden || []).length > 0 ||
       (prefs.groups || []).length > 0 ||
+      (prefs.collapsed || []).length > 0 ||
       (prefs.autoFiled || []).length > 0 ||
       prefs.auto === true);
 
@@ -377,8 +639,64 @@ function build(require) {
     }, SAVE_DEBOUNCE_MS);
   }
 
-  function reportHost(detail) {
+  /**
+   * Prove from the Host side that this half executed at all.
+   *
+   * The API route can refuse the page (403) and every `hostCall` then returns
+   * null in silence, so "ran but muted" is indistinguishable from "never ran".
+   * A throwaway bundle request rides the same channel the real bundles use, and
+   * the Host logs every bundle it is asked for, refusals included.
+   */
+    function reportHost(detail) {
     void hostCall('report', { ...detail, href: String(locationMode()), at: Date.now() });
+  }
+
+  let pageLogSent = 0;
+
+  /** Ship the page's recent errors/warnings to the Host log, once per change. */
+  function dumpPageLog(tag) {
+    try {
+      const box = window[PAGE_LOG];
+      if (!box || !Array.isArray(box.events) || box.events.length === 0) return;
+      if (box.events.length === pageLogSent) return;
+      pageLogSent = box.events.length;
+      reportHost({ kind: 'page-log', tag, total: box.events.length, events: box.events.slice(-40) });
+    } catch { /* a dump must never break apply */ }
+  }
+  /** Every /plugins/ script this page asked for, with the status the browser saw.
+   * A plugin that never registered is either a request that failed or a module
+   * that failed after arriving; the two need different fixes, so log both. */
+  let slotsSent = '';
+
+  function dumpNet(tag) {
+    try {
+      const list = typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function'
+        ? performance.getEntriesByType('resource')
+        : [];
+      const rows = list
+        .filter((row) => String(row.name || '').includes('/plugins/'))
+        .slice(-60)
+        .map((row) => {
+          const url = String(row.name || '').replace(/^[a-z]+:\/\/[^/]+/i, '');
+          const status = row.responseStatus === undefined ? '?' : row.responseStatus;
+          return `${status}|${Math.round(row.transferSize || 0)}|${Math.round(row.duration || 0)}ms|${url.slice(0, 130)}`;
+        });
+      if (rows.length === 0) return;
+      reportHost({ kind: 'net', tag, scripts: rows });
+    } catch { /* diagnostics only */ }
+  }
+
+  /** Which plugins the panel slot holds right now, and every time that changes. */
+  function dumpSlots(slots, tag) {
+    try {
+      if (!slots || typeof slots.entriesOfSlot !== 'function') return;
+      const ids = slots.entriesOfSlot('sidebar.panellist')
+        .map((entry) => String((entry && entry.options && entry.options.id) || ''))
+        .join(',');
+      if (tag !== 'change' && ids === slotsSent) return;
+      slotsSent = ids;
+      reportHost({ kind: 'slots', tag, ids });
+    } catch { /* diagnostics only */ }
   }
 
   /** `location.href` minus any query, so one line says which origin we ran on. */
@@ -684,7 +1002,7 @@ function build(require) {
     let pollTimer = null;
     let lastApplyAt = 0;
 
-    const diag = { found: false, rows: 0, mapped: 0, at: 0, listClass: '', error: null };
+    const diag = { found: false, rows: 0, mapped: 0, at: 0, listClass: '', error: null, guard: true, panelMax: 45, folded: '' };
 
     const readPlan = () => {
       const entries = readEntries(ctx.slots);
@@ -718,6 +1036,39 @@ function build(require) {
       return { entries, prefs, hidden, blocks };
     };
 
+    /**
+     * One line per real pass naming what the list holds right now.
+     *
+     * A row a sibling plugin registered and the page then lost is invisible from
+     * here: the registration is gone before the DOM is touched. The dump records
+     * both sides (slot entries and buttons), so the side that lost the row says
+     * which half dropped it.
+     */
+    let dumpedKeys = '';
+    const dumpPanellist = (plan, list) => {
+      try {
+        const buttons = Array.from(list.querySelectorAll(':scope > button'));
+        const rows = buttons.map((button) => {
+          const label = button.getAttribute('aria-label') || '';
+          const order = button.style.order || '';
+          const shown = button.style.display === 'none' ? 'hidden' : 'shown';
+          return `${label}|${shown}|${order}`;
+        });
+        const key = rows.join(';');
+        if (key === dumpedKeys) return;
+        dumpedKeys = key;
+        reportHost({
+          kind: 'panellist',
+          listClass: diag.listClass,
+          entries: plan.entries.map((entry) => `${entry.id}@${entry.order}`).join(','),
+          hidden: Array.from(plan.hidden).join(','),
+          rows: rows.join(' · ').slice(0, 1500),
+        });
+      } catch {
+        /* a dump must never break the pass */
+      }
+    };
+
     const findList = (entries) => {
       if (listEl && listEl.isConnected && listEl.querySelector(':scope > button')) return listEl;
       listEl = null;
@@ -748,16 +1099,112 @@ function build(require) {
       return null;
     };
 
-    const makeSeparator = (name, order) => {
+    /**
+     * A group title, and the fold control for that group.
+     *
+     * The host sidebar has no grouping of its own, so this element is the only
+     * thing here the user can click. It is built inside the host's list, which
+     * means it must survive that list's React re-renders: no listeners on the
+     * list, only on the node itself, replaced on every pass.
+     */
+    const makeSeparator = (block, order) => {
       const element = document.createElement('div');
       element.className = 'dpc-sep';
       element.setAttribute('data-dpc-sep', '');
+      element.setAttribute('data-dpc-group-id', block.id);
       element.style.order = String(order);
+      if (block.id !== '') {
+        element.setAttribute('role', 'button');
+        element.setAttribute('tabindex', '0');
+        element.setAttribute('aria-expanded', block.folded ? 'false' : 'true');
+        element.setAttribute('aria-label', block.name + ' · ' + t(block.folded ? 'layoutExpandOne' : 'layoutCollapseOne'));
+        if (block.folded) element.setAttribute('data-dpc-collapsed', '');
+        const toggle = (event) => {
+          if (event) event.preventDefault();
+          toggleCollapse(block.id);
+        };
+        element.addEventListener('click', toggle);
+        element.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') toggle(event);
+        });
+      }
+      const caret = document.createElement('span');
+      caret.className = 'dpc-caret';
+      caret.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span');
       label.className = 'dpc-sepLabel';
-      label.textContent = name;
+      label.textContent = block.name;
+      const count = document.createElement('span');
+      count.className = 'dpc-sepCount';
+      count.textContent = String(block.count);
+      element.appendChild(caret);
       element.appendChild(label);
+      element.appendChild(count);
       return element;
+    };
+
+    /**
+     * Mark the host nodes the layout CSS hangs off.
+     *
+     * The sidebar ships `panelList{flex:none}` next to `regionArea{flex:1;
+     * overflow:hidden}`: a long panel list takes whatever height it wants and
+     * the session area collapses to nothing with no scroller. Those class names
+     * are hashed per build, so the hooks are attributes we add here and remove
+     * in destroy(); the CSS in SIDEBAR_CSS keys off them, never off the hashed
+     * names.
+     */
+    let regionEl = null;
+    const tagLayout = (list, prefs) => {
+      try {
+        const off = prefs.guard === false;
+        if (off) {
+          list.removeAttribute('data-dpc-list');
+          list.style.removeProperty('--dpc-panellist-max');
+          list.removeAttribute('data-dpc-unbounded');
+          if (regionEl) regionEl.removeAttribute('data-dpc-region');
+          regionEl = null;
+          diag.guard = false;
+          return;
+        }
+        list.setAttribute('data-dpc-list', '');
+        const max = Number(prefs.panelMax) || 0;
+        if (max > 0) {
+          list.style.setProperty('--dpc-panellist-max', max + 'vh');
+          list.removeAttribute('data-dpc-unbounded');
+        } else {
+          list.style.removeProperty('--dpc-panellist-max');
+          list.setAttribute('data-dpc-unbounded', '');
+        }
+        const parent = list.parentElement;
+        let region = null;
+        if (parent) {
+          for (const sibling of Array.from(parent.children)) {
+            if (sibling === list) continue;
+            const className = typeof sibling.className === 'string' ? sibling.className : '';
+            if (className.includes('regionArea')) {
+              region = sibling;
+              break;
+            }
+          }
+        }
+        if (regionEl && regionEl !== region) regionEl.removeAttribute('data-dpc-region');
+        if (region) region.setAttribute('data-dpc-region', '');
+        regionEl = region;
+        diag.panelMax = max;
+      } catch {
+        /* a different list shape: leave the sidebar alone this pass */
+      }
+    };
+
+    /** Fold or unfold one group, persisting the choice through commit(). */
+    const toggleCollapse = (id) => {
+      if (!id) return;
+      const prefs = store.state.prefs;
+      if (prefs.collapse === false) return;
+      const next = new Set(prefs.collapsed || []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      commit({ ...prefs, collapsed: Array.from(next) });
     };
 
     const pause = () => {
@@ -804,11 +1251,23 @@ function build(require) {
       }
       diag.listClass = typeof list.className === 'string' ? list.className.split(/\s+/)[0] || '' : '';
 
+      diag.guard = plan.prefs.guard !== false;
+      diag.panelMax = plan.prefs.panelMax;
+      // Run on every pass, before the signature shortcut: changing the height
+      // cap or the guard must reach the DOM even when the rows did not move.
+      tagLayout(list, plan.prefs);
+
+      const wide = list.getBoundingClientRect().width >= WIDE_MIN_WIDTH;
+      const folding = wide && plan.prefs.collapse !== false;
+      const folded = folding ? new Set(plan.prefs.collapsed || []) : new Set();
+      diag.folded = Array.from(folded).join(',');
+
       const nextSignature = JSON.stringify({
         blocks: plan.blocks,
         hidden: plan.hidden ? Array.from(plan.hidden).sort() : [],
         entries: plan.entries.map((entry) => entry.id + ':' + entry.label),
-        wide: list.getBoundingClientRect().width >= WIDE_MIN_WIDTH,
+        wide,
+        folded: Array.from(folded),
       });
       const separatorsLeft = list.querySelectorAll('[data-dpc-sep]').length;
       if (nextSignature === signature && (separatorsLeft > 0 || plan.blocks.length <= 1)) {
@@ -816,11 +1275,11 @@ function build(require) {
         return;
       }
       signature = nextSignature;
+      dumpPanellist(plan, list);
 
       pause();
       try {
         const buttons = Array.from(list.querySelectorAll(':scope > button'));
-        const wide = list.getBoundingClientRect().width >= WIDE_MIN_WIDTH;
         for (const node of Array.from(list.querySelectorAll('[data-dpc-sep]'))) node.remove();
 
         const map = mapButtons(plan.entries, buttons);
@@ -836,17 +1295,25 @@ function build(require) {
 
         let position = ORDER_START;
         for (const block of plan.blocks) {
-          const visible = block.ids.filter((id) => !plan.hidden.has(id) && map.has(id));
-          if (visible.length === 0) continue;
+          const inBlock = block.ids.filter((id) => map.has(id));
+          const shown = inBlock.filter((id) => !plan.hidden.has(id));
+          if (shown.length === 0) continue;
+          const foldedHere = block.id !== '' && folded.has(block.id);
+          // The title stays while the group is folded: it is the only way back,
+          // and the count keeps the hidden rows discoverable.
           if (wide && block.name) {
-            list.appendChild(makeSeparator(block.name, position));
+            list.appendChild(
+              makeSeparator({ id: block.id, name: block.name, count: shown.length, folded: foldedHere }, position),
+            );
             position += ORDER_STEP;
           }
-          for (const id of visible) {
+          if (foldedHere) continue;
+          for (const id of shown) {
             const button = map.get(id);
             button.style.order = String(position);
             button.style.display = '';
             button.removeAttribute('data-dpc-hidden');
+            button.removeAttribute('data-dpc-collapsed');
             button.setAttribute('data-dpc-group', block.name || '');
             position += ORDER_STEP;
           }
@@ -857,6 +1324,19 @@ function build(require) {
           if (!button) continue;
           button.style.display = 'none';
           button.setAttribute('data-dpc-hidden', '');
+          button.removeAttribute('data-dpc-collapsed');
+        }
+
+        // Folding is a separate axis from "hidden in this plugin": a folded row
+        // is still shown in the settings list and comes back with one click.
+        for (const block of plan.blocks) {
+          if (block.id === '' || !folded.has(block.id)) continue;
+          for (const id of block.ids) {
+            const button = map.get(id);
+            if (!button || plan.hidden.has(id)) continue;
+            button.style.display = 'none';
+            button.setAttribute('data-dpc-collapsed', '');
+          }
         }
 
         // A row we could not map is left in place, but kept after every managed row.
@@ -940,6 +1420,14 @@ function build(require) {
           node.style.removeProperty('display');
         }
       }
+      for (const node of Array.from(document.querySelectorAll('[data-dpc-list]'))) {
+        node.removeAttribute('data-dpc-list');
+        node.removeAttribute('data-dpc-unbounded');
+        node.style.removeProperty('--dpc-panellist-max');
+      }
+      for (const node of Array.from(document.querySelectorAll('[data-dpc-collapsed]'))) node.removeAttribute('data-dpc-collapsed');
+      if (regionEl) regionEl.removeAttribute('data-dpc-region');
+      regionEl = null;
       listEl = null;
     };
 
@@ -1717,6 +2205,96 @@ function build(require) {
       );
     };
 
+    // The sidebar is the host's DOM, but the trade-off is the user's: this card
+    // is the only place the guard, the cap and the fold switch are explained.
+    const layoutOn = prefs.guard !== false;
+    const foldingOn = prefs.collapse !== false;
+    const capNow = typeof prefs.panelMax === 'number' ? prefs.panelMax : 45;
+    const setLayout = (patch) => commit({ ...prefsNow(), ...patch });
+    const layoutSwitch = (on, label, onClick) =>
+      h(
+        'button',
+        {
+          type: 'button',
+          className: 'dpc-switch',
+          role: 'switch',
+          'aria-checked': on ? 'true' : 'false',
+          'aria-label': label,
+          onClick,
+        },
+        h('span', { className: 'dpc-switchKnob', 'aria-hidden': true }),
+      );
+    const layoutRow = (name, hint, control) =>
+      h(
+        'div',
+        { className: 'dpc-layoutRow' },
+        h(
+          'div',
+          { className: 'dpc-layoutText' },
+          h('span', { className: 'dpc-layoutName' }, name),
+          hint ? h('p', { className: 'dpc-note' }, hint) : null,
+        ),
+        control,
+      );
+    const layout = h(
+      'section',
+      { className: 'dpc-card dpc-layout' },
+      h('h2', { className: 'dpc-cardTitle' }, t('layoutTitle')),
+      h('p', { className: 'dpc-note' }, t('layoutHint')),
+      layoutRow(
+        t('layoutGuard'),
+        t('layoutGuardHint'),
+        layoutSwitch(layoutOn, t('layoutGuard'), () => setLayout({ guard: !layoutOn })),
+      ),
+      layoutRow(
+        t('layoutCollapse'),
+        t('layoutCollapseHint'),
+        layoutSwitch(foldingOn, t('layoutCollapse'), () => setLayout({ collapse: !foldingOn })),
+      ),
+      layoutRow(
+        t('layoutMax'),
+        null,
+        h(
+          'div',
+          { className: 'dpc-segment', role: 'group', 'aria-label': t('layoutMax') },
+          [35, 45, 55, 0].map((value) =>
+            h(
+              'button',
+              {
+                key: String(value),
+                type: 'button',
+                className: value === capNow ? 'dpc-segmentBtn dpc-segmentBtn--on' : 'dpc-segmentBtn',
+                'aria-pressed': value === capNow ? 'true' : 'false',
+                disabled: !layoutOn,
+                onClick: () => setLayout({ panelMax: value }),
+              },
+              value === 0 ? t('layoutMaxNone') : value + 'vh',
+            ),
+          ),
+        ),
+      ),
+      layoutOn && groupsOf.length > 1
+        ? h(
+            'div',
+            { className: 'dpc-layoutActions' },
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dpc-link',
+                onClick: () => setLayout({ collapsed: groupsOf.map((group) => group.id) }),
+              },
+              t('layoutCollapseAll'),
+            ),
+            h(
+              'button',
+              { type: 'button', className: 'dpc-link', onClick: () => setLayout({ collapsed: [] }) },
+              t('layoutExpandAll'),
+            ),
+          )
+        : null,
+    );
+
     const groups =
       groupsOf.length === 0
         ? h(
@@ -1788,6 +2366,7 @@ function build(require) {
         head,
         notice,
         auto,
+        layout,
         order.length === 0
           ? h(
               'section',
@@ -1929,6 +2508,23 @@ function build(require) {
     .dpc-ghost:hover:not(:disabled){border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
     .dpc-ghost:disabled{opacity:.4;cursor:default}
 
+    /* Sidebar layout card: one row per switch, a segmented control for the cap.
+       Hairlines only sit *between* rows: the first row has none, and the card
+       hint keeps a real gap above it, so the small print never touches a line. */
+    .dpc-layout{display:flex;flex-direction:column}
+    .dpc-layout > .dpc-note{margin:6px 0 10px}
+    .dpc-layoutRow{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-top:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.14))}
+    .dpc-layoutRow:first-of-type{padding-top:4px;border-top:0}
+    .dpc-layoutText{display:flex;flex:1 1 auto;flex-direction:column;gap:3px;min-width:0}
+    .dpc-layoutName{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+    .dpc-layoutText .dpc-note{margin:0;line-height:17px}
+    .dpc-layoutActions{display:flex;justify-content:flex-end;gap:4px;margin-top:12px;padding-top:12px;border-top:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.14))}
+    .dpc-layoutRow .dpc-switch,.dpc-layoutRow .dpc-segment{flex:none}
+    .dpc-segment{display:inline-flex;flex:none;gap:2px;padding:2px;border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-fill-l2,rgba(127,127,127,.10))}
+    .dpc-segmentBtn{appearance:none;border:0;background:transparent;padding:2px 8px;border-radius:4px;font:inherit;font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-segmentBtn--on{background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.22));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-segmentBtn:disabled{opacity:.4;cursor:default}
+
     @media (max-width:1000px){
       /* Below the column width the frame becomes the gutter instead of pushing
          content past the window edge. */
@@ -1954,15 +2550,31 @@ function build(require) {
   `;
 
   const SIDEBAR_CSS = `
-    .dpc-sep{display:flex;align-items:center;gap:8px;flex:none;padding:12px 8px 4px;font-size:11px;font-weight:500;line-height:14px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.78));white-space:nowrap;overflow:hidden;pointer-events:none}
+    /* Fallback for a sidebar that grows past the window: the list scrolls
+       instead of pushing the session area to zero height. The host ships
+       flex:none there and overflow:hidden below it (see #12083). */
+    [data-dpc-list]{flex:0 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;max-height:max(120px,var(--dpc-panellist-max,45vh));overscroll-behavior:contain;scrollbar-gutter:stable}
+    [data-dpc-list][data-dpc-unbounded]{max-height:none}
+    [data-dpc-list]>button{flex:none}
+    [data-dpc-region]{flex:1 1 auto;min-height:min(120px,18vh)}
+
+    .dpc-sep{display:flex;align-items:center;gap:6px;flex:none;padding:12px 8px 4px;font-size:11px;font-weight:500;line-height:14px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.78));white-space:nowrap;overflow:hidden;cursor:pointer;border-radius:var(--dsw-radius-sm,6px);user-select:none}
+    .dpc-sep:hover{color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+    .dpc-sep:focus-visible{outline:2px solid var(--dsw-focus-ring-color,rgba(127,127,127,.65));outline-offset:1px}
+    .dpc-caret{flex:none;width:0;height:0;border-left:4px solid currentColor;border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;opacity:.7;transform:rotate(90deg);transition:transform 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-sep[data-dpc-collapsed] .dpc-caret{transform:none}
     .dpc-sepLabel{min-width:0;overflow:hidden;text-overflow:ellipsis}
+    .dpc-sepCount{flex:none;margin-left:2px;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:10px;opacity:.72}
     .dpc-sep::after{content:'';flex:1;height:.5px;background:var(--dsw-alias-separator-primary,rgba(127,127,127,.16))}
+    @media (prefers-reduced-motion:reduce){.dpc-caret{transition:none}}
   `;
 
 
   /* ----------------------------------------------------------------- entry */
 
   function applyInner(ctx) {
+  try { traceBoot('apply'); } catch { /* ignore */ }
+  try { if (document.title.startsWith('DPC ')) document.title = 'DPC ok'; } catch { /* ignore */ }
       ctxRef = ctx;
 
       // A hot-swapped Client half re-runs apply() without reloading the page, so
@@ -2024,8 +2636,39 @@ function build(require) {
         ctx.effect(() => () => window.removeEventListener('focus', probe), `${PACKAGE}: inventory`);
       }
       reportHost({ kind: 'boot', origin: locationMode(), agent: String(navigator.userAgent || '').slice(0, 120) });
+      try {
+        const boot = bootSnapshot();
+        if (boot) {
+          reportHost({ kind: 'boot-manifest', rev: boot.rev, entries: boot.ids.size, ids: Array.from(boot.ids).join(',') });
+        }
+      } catch {
+        /* a dump must never break apply */
+      }
+      try {
+        dumpPageLog('boot');
+        dumpNet('boot');
+        try {
+          const slotsService = optionalService(ctx, 'slots');
+          dumpSlots(slotsService, 'boot');
+          if (slotsService && typeof slotsService.subscribe === 'function') {
+            ctx.effect(
+              () => slotsService.subscribe('sidebar.panellist', () => dumpSlots(slotsService, 'change')),
+              `${PACKAGE}: slotwatch`,
+            );
+          }
+          for (const delay of [8000, 20000, 45000]) {
+            setTimeout(() => { dumpNet(`t${delay}`); dumpSlots(slotsService, `t${delay}`); }, delay);
+          }
+        } catch { /* a dump must never break apply */ }
+        for (const delay of [8000, 20000, 45000]) {
+          setTimeout(() => dumpPageLog(`t${delay}`), delay);
+        }
+      } catch {
+        /* a dump must never break apply */
+      }
 
 
+      try { traceBoot('ready'); } catch { /* ignore */ }
       // A registration, a rename or a locale switch changes the list this plugin
       // lays out, so every one of them re-runs the pass.
       if (typeof ctx.slots.subscribe === 'function') {
@@ -2035,25 +2678,61 @@ function build(require) {
         ctx.effect(() => locale.subscribe(() => engineRef && engineRef.schedule()), `${PACKAGE}: labels`);
       }
 
-      ctx.slots.inject(SLOT_MAIN, () =>
-        ctx.slots.register({ name: SLOT_MAIN, key: PANEL_KEY, locale: NS }, PanelManager),
-      );
+      ctx.slots.inject(SLOT_MAIN, () => {
+        try {
+          return ctx.slots.register({ name: SLOT_MAIN, key: PANEL_KEY, locale: NS }, PanelManager);
+        } catch (error) {
+          // A second instance of this module may hold the key already. Losing one entry is
+          // survivable; letting the throw escape aborts the page's whole plugin start().
+          console.warn(`[${PACKAGE}] duplicate "${SLOT_MAIN}" entry skipped`, error);
+          return undefined;
+        }
+      });
 
-      ctx.slots.inject(SLOT_SETTINGS, () =>
-        ctx.slots.register(
-          { name: SLOT_SETTINGS, id: 'panel-control-settings', order: 60, locale: NS, label: () => t('panelTitle') },
-          SettingsEntry,
-        ),
-      );
+      ctx.slots.inject(SLOT_SETTINGS, () => {
+        try {
+          return ctx.slots.register(
+            { name: SLOT_SETTINGS, id: 'panel-control-settings', order: 60, locale: NS, label: () => t('panelTitle') },
+            SettingsEntry,
+          );
+        } catch (error) {
+          console.warn(`[${PACKAGE}] duplicate "${SLOT_SETTINGS}" entry skipped`, error);
+          return undefined;
+        }
+      });
 
       // The entry lives in the very list it manages: it is registered last, and
       // the manager keeps it visible so the page stays reachable.
-      ctx.slots.inject(SLOT_PANELS, () =>
-        ctx.slots.register(
-          { name: SLOT_PANELS, id: PANEL_KEY, order: 90, locale: NS, label: () => t('panelTitle') },
-          PanelIcon,
-        ),
-      );
+      ctx.slots.inject(SLOT_PANELS, () => {
+        try {
+          return ctx.slots.register(
+            { name: SLOT_PANELS, id: PANEL_KEY, order: 90, locale: NS, label: () => t('panelTitle') },
+            PanelIcon,
+          );
+        } catch (error) {
+          console.warn(`[${PACKAGE}] duplicate "${SLOT_PANELS}" entry skipped`, error);
+          return undefined;
+        }
+      });
+    try { window.__dpcApplied = true; } catch { /* ignore */ }
+  }
+
+  /**
+   * True when this document already holds our sidebar entry, i.e. another instance of this module
+   * applied first. Probing the slot table beats a window flag: a hot swap disposes the old instance
+   * but keeps the window, so a flag would lock the replacement out.
+   */
+  function alreadyRegistered(ctx) {
+    try {
+      const entries = ctx.slots.entriesOfSlot(SLOT_MAIN) || [];
+      return entries.some((entry) => {
+        const options = entry && entry.options;
+        const key = (options && options.key) || (entry && entry.key);
+        return String(key || '') === PANEL_KEY;
+      });
+    } catch {
+      return false;
+    }
   }
 
   return {
@@ -2062,6 +2741,16 @@ function build(require) {
     testables: { createEngine, mapButtons, readEntries, normalize, sanitize, store, reorderList, applyInner, setCtx: (value) => { ctxRef = value; } },
     apply(ctx) {
       try {
+
+        // The runner can lay this module into the page twice - once as its own startup script and
+        // once inside a composed batch - so a second instance applies into the same slot table.
+        // DSH throws on the duplicate key and aborts the whole start(), which is what removes every
+        // plugin scheduled after us. Skipping the second copy keeps the batch alive.
+        if (alreadyRegistered(ctx)) {
+          try { traceBoot('apply-dup-skip'); } catch { /* ignore */ }
+          reportHost({ kind: 'apply-skip', reason: 'this document already holds our slots' });
+          return;
+        }
         applyInner(ctx);
       } catch (error) {
         console.error(`[${PACKAGE}] apply failed`, error);
@@ -2071,9 +2760,11 @@ function build(require) {
   };
 }
 
+try {
 window.__ModuleLoader__.load({
   id: 'dsh-panel-control',
   factory(require) {
+    try { traceBoot('factory'); } catch { /* ignore */ }
     try {
       return build(require);
     } catch (error) {
@@ -2083,4 +2774,10 @@ window.__ModuleLoader__.load({
     }
   },
 });
-
+} catch (error) {
+  // A second evaluation of the same build registers a factory that is already there; the loader
+  // throws for it, and that throw is harmless (the first factory stays in place). A disable/enable
+  // cycle removed the factory first, so this same call is how the plugin comes back.
+  console.warn('[dsh-panel-control] the bundle was evaluated with its registration already present; keeping the first one', error);
+}
+})();

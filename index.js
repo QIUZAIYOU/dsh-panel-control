@@ -17,6 +17,7 @@
 
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -76,6 +77,23 @@ function isLoopbackAuthority(authority) {
 }
 
 /**
+ * The desktop's dev-proxy serves the page from a reserved origin such as
+ * `http://unlag.invalid`. That TLD never resolves, so only a proxy running
+ * inside this Host can put it in a Host header -- but the page is still ours.
+ * Treating it as foreign refused every call the plugin made for itself.
+ */
+function isProxyAuthority(authority) {
+  if (typeof authority !== 'string' || authority === '') return false;
+  try {
+    const url = new URL(`http://${authority}`);
+    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) return false;
+    return /\.invalid$/.test(url.hostname.replace(/\.$/, ''));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Only the page the Host itself served may call this route.
  *
  * "Host and Origin are both loopback" is not enough: every dev server, every
@@ -86,7 +104,10 @@ function isLoopbackAuthority(authority) {
  */
 function isOwnRequest(request) {
   const host = request.headers.get('host');
-  if (!isLoopbackAuthority(host)) return false;
+  const proxied = isProxyAuthority(host);
+  if (!isLoopbackAuthority(host) && !proxied) return false;
+  // A proxied page cannot be told apart by port: the proxy owns the authority.
+  if (proxied) return true;
   // A browser labels where the request came from; anything but same-origin (or
   // a non-browser caller) is a different page and has no business here.
   const site = request.headers.get('sec-fetch-site');
@@ -401,7 +422,30 @@ async function classify(scope, payload, signal) {
 /* -------------------------------------------------------------------- route */
 
 async function handle(scope, request) {
-  if (!isOwnRequest(request)) return new Response('forbidden', { status: 403 });
+  // A page beacon is a plain GET: it has to work from the bundle's module scope,
+  // where no service exists yet, and it is the only channel that still speaks
+  // when the runner never applies the Client half.
+  {
+    const beaconUrl = new URL(String(request.url || ''), 'http://beacon.invalid');
+    if (beaconUrl.pathname === ROUTE_PATH && beaconUrl.searchParams.has('d')) {
+      if (!isOwnRequest(request)) {
+        logHost(`page-beacon refused: host=${request.headers.get('host')} origin=${request.headers.get('origin')}`);
+        return new Response('forbidden', { status: 403 });
+      }
+      const text = String(beaconUrl.searchParams.get('d') || '').slice(0, 700);
+      logHost(`page-beacon: ${text}`);
+      return new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+    }
+  }
+  if (!isOwnRequest(request)) {
+    // Stay quiet here and "the page ran but was refused" looks exactly like
+    // "the page never ran": every hostCall returns null on a 403, so the
+    // Client half logs nothing either way.
+    logHost(
+      `refused: ${request.method} host=${request.headers.get('host')} origin=${request.headers.get('origin')} site=${request.headers.get('sec-fetch-site')} · ${String(request.url || '').split('?')[0].slice(0, 80)}`,
+    );
+    return new Response('forbidden', { status: 403 });
+  }
   if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
   const contentType = request.headers.get('content-type');
   if (!contentType || contentType.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
@@ -549,6 +593,29 @@ function logBatchPlacement(scope) {
         })}`,
       );
     }
+    // Every row, once per start: a repeated id, or two ids over one bundle, is what makes a
+    // page apply a plugin twice and collide on the slot ids it registers.
+    const rows = entries.map((row) => ({
+        id: row && row.id,
+        rev: row && row.rev,
+        immediately: row && row.immediately,
+        url: String((row && row.url) || '').slice(0, 120),
+      }));
+      const byId = new Map();
+      for (const row of rows) byId.set(row.id, (byId.get(row.id) || 0) + 1);
+      const repeated = [...byId].filter((pair) => pair[1] > 1).map((pair) => `${pair[0]}x${pair[1]}`);
+      const byUrl = new Map();
+      for (const row of rows) {
+        const key = String(row.url || '').split('&rev=')[0];
+        byUrl.set(key, [...(byUrl.get(key) || []), row.id]);
+      }
+      const shared = [...byUrl].filter((pair) => pair[1].length > 1).map((pair) => `${pair[0]} <- ${pair[1].join(',')}`);
+      logHost(`graph: batches=${batches.length} rows=${rows.length} repeated=${JSON.stringify(repeated)} shared-bundle=${JSON.stringify(shared.slice(0, 4))}`);
+        for (const batch of batches) {
+          const ids = batch && Array.isArray(batch.entries) ? batch.entries : [];
+          logHost(`graph: batch dump one phase=${String(batch && batch.phase)} rev=${String(batch && batch.rev)} n=${ids.length} ws=${ids.includes('dsh-workspace-control')} pc=${ids.includes(PACKAGE)}`);
+        }
+      logHost(`graph: ids ${rows.map((row) => row.id).join(',')}`);
     for (const batch of batches) {
       if (!batch || !Array.isArray(batch.entries) || !batch.entries.includes(PACKAGE)) continue;
       const index = batch.entries.indexOf(PACKAGE);
@@ -582,7 +649,9 @@ function logBatchPlacement(scope) {
  * gets the bytes it needs; everything else passes straight through, and the
  * patch is undone on teardown.
  */
-const SERVE_CURRENT = String(process.env.DPC_SERVE_CURRENT || '').toLowerCase() !== 'off';
+// Off by default: rewriting the shared bundle service is a whole-page change that
+// other plugins pay for. It stays available as an explicit escape hatch only.
+const SERVE_CURRENT = String(process.env.DPC_SERVE_CURRENT || '').toLowerCase() === 'on';
 let servePatched = null;
 let serveLoggedAt = 0;
 /**
@@ -595,9 +664,30 @@ let serveLoggedAt = 0;
  */
 const servedBytes = new Map();
 const SERVED_BYTES_KEPT = 5;
+
+/**
+ * A combo request asks for several bundles at once (`/plugins/??a,b,c`).
+ *
+ * A combo response can only be answered whole: handing back one module's bytes
+ * for a combo URL is not a stale revision, it is a broken batch. The page that
+ * receives it registers this plugin and nothing else in the batch, so every
+ * plugin after ours in the composition disappears without an error. Keep the
+ * two shapes strictly apart.
+ */
+function isComboUrl(url) {
+  const value = String(url || '');
+  const query = value.indexOf('??');
+  return query !== -1 && value.slice(query + 2).split('&')[0].includes(',');
+}
+
+/** Bytes are remembered per (revision, shape): one revision can exist as a
+ * single bundle and as a combo, and the two bodies are not interchangeable. */
+function servedKey(url) {
+  return `${revisionOf(url) || ''}|${isComboUrl(url) ? 'combo' : 'single'}`;
+}
 /** Requests to log per Host process: enough to see a boot, not a chatty stream. */
 let bundleAsked = 0;
-const BUNDLE_ASK_LIMIT = 8;
+const BUNDLE_ASK_LIMIT = 120;
 
 function revisionOf(url) {
   const match = /[?&]rev=([A-Za-z0-9._-]+)/.exec(String(url || ''));
@@ -612,21 +702,23 @@ function serveCurrentRevision(scope) {
   servePatched = modules;
   modules.bundleResource = async function bundleResourceWithFallback(method, url) {
     const answer = await original(method, url);
-    if (String(url || '').includes(PACKAGE) && bundleAsked < BUNDLE_ASK_LIMIT) {
+    // Log every bundle the page asks for, whichever plugin it belongs to: when a
+    // neighbour disappears, the question is whether its script *failed to arrive*
+    // (a status code here) or arrived and failed (a client-side message instead).
+    const askedUrl = String(url || '');
+    if (askedUrl.includes('??') && bundleAsked < BUNDLE_ASK_LIMIT) {
       bundleAsked += 1;
-      const kind = String(url || '').includes('??') && String(url || '').split('??')[1].includes(',')
-        ? 'combo'
-        : 'single';
       logHost(
-        `bundle: asked ${kind} rev ${String(revisionOf(url))} -> ${answer && answer.status} · ` +
-          `${String(url || '').slice(0, 160)}`,
+        `bundle: asked ${isComboUrl(askedUrl) ? 'combo' : 'single'} ` +
+          `rev ${String(revisionOf(askedUrl))} -> ${answer && answer.status} · ${askedUrl.slice(0, 160)}`,
       );
     }
     if (answer && answer.status === 200 && method === 'GET' && String(url || '').includes(PACKAGE)) {
       const rev = revisionOf(url);
       if (rev && typeof answer.body === 'string') {
-        servedBytes.delete(rev);
-        servedBytes.set(rev, answer);
+        const key = servedKey(url);
+        servedBytes.delete(key);
+        servedBytes.set(key, answer);
         while (servedBytes.size > SERVED_BYTES_KEPT) {
           servedBytes.delete(servedBytes.keys().next().value);
         }
@@ -635,11 +727,12 @@ function serveCurrentRevision(scope) {
     if (answer && answer.status !== 404) return answer;
     try {
       const requested = String(url || '');
-      if (!requested.includes(PACKAGE)) return answer;
       // A revision this Host already handed out outranks the current one: the
       // page booted with it, and its list will keep naming it.
       const asked = revisionOf(requested);
-      const remembered = asked ? servedBytes.get(asked) : undefined;
+      const remembered = asked && requested.includes(PACKAGE)
+        ? servedBytes.get(servedKey(requested))
+        : undefined;
       if (remembered !== undefined) {
         if (Date.now() - serveLoggedAt > 30_000) {
           serveLoggedAt = Date.now();
@@ -649,10 +742,37 @@ function serveCurrentRevision(scope) {
         }
         return method === 'HEAD' ? { ...remembered, body: undefined } : remembered;
       }
+      // Only a single-bundle request may be re-pointed at the current revision.
+      // A combo has to be answered as the batch it asked for: replying with this
+      // package alone drops every other module the page listed, and the ones
+      // ordered after us in the composition never run. Let the registry's 404
+      // through instead, so the page reloads its list instead of half-booting.
+      if (isComboUrl(requested)) {
+        if (Date.now() - serveLoggedAt > 30_000) {
+          serveLoggedAt = Date.now();
+          logHost(
+            `bundle: stale combo rev ${String(asked)} left as a 404 (a batch cannot be ` +
+              'answered with one module; the page must reload its plugin list)',
+          );
+        }
+        return answer;
+      }
       const graph = typeof modules.graph === 'function' ? modules.graph() : null;
       const rows = graph && Array.isArray(graph.entries) ? graph.entries : [];
-      const entry = rows.find((row) => row && row.id === PACKAGE);
-      if (!entry || typeof entry.url !== 'string') return answer;
+      // Every plugin that declares `immediately` is fetched as a single bundle
+      // of its own, so a retired revision drops exactly one plugin: its script
+      // never runs, it never registers a slot, and the manager still reports it
+      // running. Rescuing only this package made this plugin outlive its
+      // neighbours: the one carrying the fallback survived while the one next
+      // to it vanished. Rescue every row the page named instead.
+      const entry = rows.find(
+        (row) =>
+          row &&
+          typeof row.id === 'string' &&
+          typeof row.url === 'string' &&
+          requested.includes(`${row.id}/client.js`),
+      );
+      if (!entry) return answer;
       const retryUrl = entry.url.startsWith('/') ? entry.url : `/${entry.url}`;
       if (retryUrl === requested) return answer;
       const retried = await original(method, retryUrl);
@@ -660,8 +780,11 @@ function serveCurrentRevision(scope) {
       if (Date.now() - serveLoggedAt > 30_000) {
         serveLoggedAt = Date.now();
         logHost(
-          `served ${PACKAGE} at the current revision: the page asked for a retired one ` +
-            '(its plugin list predates the last write to client.js)',
+          entry.id === PACKAGE
+            ? `served ${PACKAGE} at the current revision: the page asked for a retired ` +
+              'one (its plugin list predates the last write to client.js)'
+            : `served ${entry.id} at the current revision: the page asked for a retired ` +
+              'one, and a missing bundle silently drops that plugin',
         );
       }
       return retried;
