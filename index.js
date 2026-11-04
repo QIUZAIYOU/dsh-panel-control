@@ -513,9 +513,56 @@ function logInventoryOnApply(scope) {
       `graph: ${listed ? 'lists' : 'does not list'} ${PACKAGE} · rev ${value.rev} · ` +
         `${value.ids.length} client entr${value.ids.length === 1 ? 'y' : 'ies'}`,
     );
-    if (listed) void probeOwnBundle(scope);
+    if (listed) {
+      void probeOwnBundle(scope);
+      logBatchPlacement(scope);
+    }
   } catch (error) {
     logHost(`graph: probe failed (${describeError(error)})`);
+  }
+}
+
+/**
+ * Where in the composed graph this package sits. The page's frozen list names
+ * our package by two URLs: the single-resource URL on `entry.url` (rev == our
+ * artifact rev) and the batch URL it actually boots with (a combo rev shared
+ * with the neighbours). When a cold start serves the batch but never executes
+ * it, these lines show whether the page's batch rev matches the one the Host
+ * composed now, or is a retired batch.
+ */
+function logBatchPlacement(scope) {
+  try {
+    const modules = clientModules || serviceOf(scope, 'clientModules');
+    const graph = modules && typeof modules.graph === 'function' ? modules.graph() : null;
+    const entries = graph && Array.isArray(graph.entries) ? graph.entries : [];
+    const batches = graph && Array.isArray(graph.batches) ? graph.batches : [];
+    const entry = entries.find((row) => row && row.id === PACKAGE);
+    if (entry) {
+      logHost(
+        `graph: own row ${JSON.stringify({
+          id: entry.id,
+          url: entry.url,
+          rev: entry.rev,
+          immediately: entry.immediately,
+          inject: entry.inject,
+          external: entry.external,
+        })}`,
+      );
+    }
+    for (const batch of batches) {
+      if (!batch || !Array.isArray(batch.entries) || !batch.entries.includes(PACKAGE)) continue;
+      const index = batch.entries.indexOf(PACKAGE);
+      const neighbours = batch.entries
+        .slice(Math.max(0, index - 1), index + 2)
+        .map((id, i) => (id === PACKAGE ? `[${id}]` : id))
+        .join(',');
+      logHost(
+        `graph: batch ${batch.phase} · rev ${String(batch.rev)} · ${batch.entries.length} entries · ` +
+          `#${index} near {${neighbours}} · url ${String(batch.url)}`,
+      );
+    }
+  } catch (error) {
+    logHost(`graph: batch placement failed (${describeError(error)})`);
   }
 }
 
@@ -567,7 +614,13 @@ function serveCurrentRevision(scope) {
     const answer = await original(method, url);
     if (String(url || '').includes(PACKAGE) && bundleAsked < BUNDLE_ASK_LIMIT) {
       bundleAsked += 1;
-      logHost(`bundle: asked rev ${String(revisionOf(url))} -> ${answer && answer.status}`);
+      const kind = String(url || '').includes('??') && String(url || '').split('??')[1].includes(',')
+        ? 'combo'
+        : 'single';
+      logHost(
+        `bundle: asked ${kind} rev ${String(revisionOf(url))} -> ${answer && answer.status} · ` +
+          `${String(url || '').slice(0, 160)}`,
+      );
     }
     if (answer && answer.status === 200 && method === 'GET' && String(url || '').includes(PACKAGE)) {
       const rev = revisionOf(url);
