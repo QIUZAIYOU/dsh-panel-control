@@ -10,6 +10,7 @@
 - **分组折叠** — 点分组标题收起该组，只留标题与计数；`Enter` / 空格同样可切换，状态写进配置。侧栏收成图标条时不显示标题，也不折叠。
 - **侧栏溢出兜底** — 导航项变多时，官方侧栏会把下方的会话/工作区列表压到 0 高且无法滚动（[讨论 #12083](https://github.com/deepseek-ai/deepseek-harness/discussions/12083)）。本插件给导航列表加上限高与滚动，给下方区域留最小高度。
 - **自动分类** — 用当前 profile 的默认模型读入口名称，自动分成 2–4 组。只处理没见过的入口，不会改动你排好的顺序；随时可手动「重新分类」。
+- **设置页补入口** — 有的第三方插件只注册了设置页（`settings.section`），却没给面板入口，设置页只能从设置弹窗里翻到。本插件为这类插件自动补一行侧栏入口：点开就是宿主渲染的完整设置页，顶部带「返回对话」；不依赖插件白名单，整体可在「侧栏布局」里关掉。
 - **面板管理自己不可隐藏** — 避免把自己锁在门外；未接管的节点（如「更多」）始终排在最后。
 
 ## 界面
@@ -22,13 +23,15 @@
 
 两个入口：侧栏导航里的「面板管理」行，以及 **设置 → 面板管理**（同一套管理界面整块嵌在设置页）。
 
+补出来的设置页入口也出现在同一个侧栏列表里，排在普通入口之后、本插件自己之前；标题沿用设置页自己的名称，重复时附带设置页 id 以区分。
+
 ## 安装
 
 从 npm 安装（推荐）：
 
 ```bash
 cd C:/Users/<you>/.dsh/profiles/desktop
-npm install dsh-panel-control@0.7.2
+npm install dsh-panel-control@0.8.3
 ```
 
 把包名加进同一目录 `package.json` 的 `dsh.profile.bundles`：
@@ -64,24 +67,26 @@ cmd //c mklink /J node_modules\dsh-panel-control D:\Github\dsh-panel-control
 
 - 高度兜底开关，以及 35 / 45 / 55 / 不限 四档上限；
 - 分组折叠开关，以及「全部收起 / 全部展开」；
+- 设置页入口开关（默认开）。关掉后补出来的行会连同注册一起撤掉，不只是藏起来；
 - 折叠状态按分组 id 记在配置里，重启后保留。
 
 ## 配置与存储
 
-布局写在 Host 侧：`~/.dsh/panel-control/prefs.json`（`~` 是这个 profile 的用户目录）。包含顺序、隐藏项、分组、折叠状态、布局开关与分类结果。
+布局写在 Host 侧：`~/.dsh/panel-control/prefs.json`（`~` 是这个 profile 的用户目录）。包含顺序、隐藏项、分组、折叠状态、布局开关、设置页入口开关与分类结果。
 
 页面 origin 是 Host 的 loopback 端口，每次启动都会换端口，`localStorage` 会因此"看起来每次清空"——所以真实存储放在 Host 侧，`localStorage` 只留镜像；读不到 Host 时才回退到镜像。配置按安装维度生效，不跟随工作区。
 
 ## 排错
 
 - **侧栏没有「面板管理」**：先重载一次页面。仍没有，看 `~/.dsh/panel-control/host.log` 与 `client.log`。
+- **设置页入口没补出来**：`host.log` 里先搜 `bridge-scan`，启动后的前几次扫描会列出当时可见的设置页（`id:registrant`）和侧栏条目；再搜 `kind=bridge` 看最终补出的 id。目标插件出现在 `sections` 里但 `ids` 没它，说明它的 section id 或 label 与某个已有面板重合，被归属规则当成了已有入口；始终不出现，是它的设置页注册得比扫描更晚（见 `docs/bridged-settings-pages.md`）。
 - **插件管理显示运行，界面却没变化**：页面多半还在用旧的 bundle revision（刚改过 `client.js` 时常见），重载一次即可。
 - **改了代码没反应**：确认 `BUILD_STAMP` 与 `package.json` 的版本一致，并跑一遍 `npm run check`。
 
 ## 开发与测试
 
 ```bash
-npm run check     # 语法检查 + 宿主路由 smoke + 布局/版本静态断言
+npm run check     # 语法检查 + 宿主路由 smoke + 布局/桥接静态与行为断言
 npm run smoke     # 只跑宿主路由用例
 npm run doctor    # 体检 profile 安装状态
 ```
@@ -89,8 +94,9 @@ npm run doctor    # 体检 profile 安装状态
 - `.scratch/harness.html`：引擎测试页（伪造 DOM 与 ctx），覆盖排序、隐藏、分组、折叠、脏数据清洗。
 - `scripts/host-smoke.mjs`：驱动宿主侧路由，覆盖设置读写、分类请求与 bundle 兜底。
 - `scripts/layout-smoke.mjs`：断言侧栏布局的 CSS 钩子与关键数值，并校验 `BUILD_STAMP` 与版本号一致。
+- `scripts/bridge-smoke.mjs`：在假 ctx 上跑 `client.js`，断言只给「有设置页、没有侧栏入口」的第三方插件补行，且成对注册 main、开关关闭后整体撤回、桥接页经自有子槽交给宿主渲染并能返回对话。
 
-进一步材料：[docs/sidebar-layout.md](docs/sidebar-layout.md)（布局与折叠实现）、[docs/ui-design-notes.md](docs/ui-design-notes.md)（界面规范与踩坑）、[docs/discussion-bundle-evaluated-twice.md](docs/discussion-bundle-evaluated-twice.md)（bundle 被求值两次的事故复盘）。
+进一步材料：[docs/sidebar-layout.md](docs/sidebar-layout.md)（布局与折叠实现）、[docs/bridged-settings-pages.md](docs/bridged-settings-pages.md)（设置页补入口的识别与渲染）、[docs/ui-design-notes.md](docs/ui-design-notes.md)（界面规范与踩坑）、[docs/discussion-bundle-evaluated-twice.md](docs/discussion-bundle-evaluated-twice.md)（bundle 被求值两次的事故复盘）。
 
 ## 边界
 
@@ -99,6 +105,7 @@ npm run doctor    # 体检 profile 安装状态
 - 依赖宿主侧栏的 DOM 结构（`[class*="panelList"]` 与面板按钮的 `aria-label`），官方大改版时需要跟进。
 - 只写 `style.order`、`style.display` 与 `data-dpc-*` 属性，不移动 React 节点，不改宿主代码。
 - 排序、隐藏、分组都只影响本机这份安装。
+- 设置页入口按「section id / label 是否已被某个面板占用」识别归属，不依赖插件声明的注册者（client runner 会把多个插件报成同一个名字）；代价是启发式：与面板同名的第三方设置页会被视为已有入口，新增内置设置页需要更新 `CORE_SECTION_IDS`。第三方设置页按宿主渲染器原位渲染，若它自己依赖设置弹窗的私有上下文，可能出现布局差异。
 
 ## 许可
 

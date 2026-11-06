@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.7.2';
+  const BUILD_STAMP = 'dsh-panel-control/0.8.3';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -265,6 +265,14 @@ function build(require) {
   const SLOT_MAIN = 'main';
   const SLOT_SETTINGS = 'settings.section';
   const PANEL_KEY = 'panel-control';
+  /** Bridged pages get their own ids; the prefix also keeps them out of the host's reserved keys. */
+  const BRIDGE_PREFIX = 'dpc-bridge-';
+  const BRIDGE_SLOT_PREFIX = 'dpc-bridge-slot-';
+  /** Between the ordinary entries and this manager's own row (order 90). */
+  const BRIDGE_ORDER = 85;
+  const BRIDGE_DEBOUNCE_MS = 120;
+  /** Boot-time rescans: plugins register their settings page while the page starts. */
+  const BRIDGE_RETRY_MS = [350, 900, 2000, 4200, 8000, 15000];
   const STORAGE_KEY = 'dsh.panel-control.v1';
   /** Host route that answers "file these entries into groups" (see index.js). */
   const RPC_CHANNEL = '/api';
@@ -377,6 +385,16 @@ function build(require) {
     layoutCollapseHint: { zh: '点分组标题收起该组，标题与数量仍保留。', en: 'Click a group title to fold it; the title and count stay.' },
     layoutMax: { zh: '高度上限', en: 'Height cap' },
     layoutMaxNone: { zh: '不限', en: 'No cap' },
+    layoutBridge: { zh: '补全设置页入口', en: 'Entries for settings pages' },
+    layoutBridgeHint: {
+      zh: '第三方插件只做了设置页、没做侧栏入口时，替它在侧栏补一个入口。关掉后这些入口全部移除，插件自己的设置页不受影响。',
+      en: 'When a third-party plugin ships a settings page but no sidebar entry, add one for it. Turning this off removes only those entries; the plugin keeps its settings page.',
+    },
+    bridgeBack: { zh: '返回对话', en: 'Back to conversation' },
+    bridgeTag: { zh: '设置页', en: 'Settings page' },
+    bridgeFrom: { zh: '来自 {p}', en: 'From {p}' },
+    bridgeMissing: { zh: '这个设置页已经不可用。', en: 'This settings page is no longer available.' },
+    diagBridge: { zh: '补全入口', en: 'bridged entries' },
     layoutCollapseAll: { zh: '全部收起', en: 'Fold all' },
     layoutExpandAll: { zh: '全部展开', en: 'Unfold all' },
     layoutCollapseOne: { zh: '点此收起', en: 'click to fold' },
@@ -468,6 +486,7 @@ function build(require) {
     collapsed: [],
     guard: true,
     collapse: true,
+    bridge: true,
     panelMax: 45,
   });
 
@@ -508,6 +527,9 @@ function build(require) {
     // explicit false is the only way to turn the CSS off.
     out.guard = raw.guard !== false;
     out.collapse = raw.collapse !== false;
+    // Missing in files written before the bridge existed: those installs get the
+    // feature by default, exactly like a fresh one.
+    out.bridge = raw.bridge !== false;
     const cap = Math.round(Number(raw.panelMax));
     out.panelMax = Number.isFinite(cap) ? Math.min(70, Math.max(0, cap)) : 45;
     if (Array.isArray(raw.groups)) {
@@ -559,7 +581,13 @@ function build(require) {
       (prefs.groups || []).length > 0 ||
       (prefs.collapsed || []).length > 0 ||
       (prefs.autoFiled || []).length > 0 ||
-      prefs.auto === true);
+      prefs.auto === true ||
+      // A file that only turned a switch off is still a file the reader edited;
+      // without this, the next load treats it as empty and drops the edit.
+      prefs.guard === false ||
+      prefs.collapse === false ||
+      prefs.bridge === false ||
+      (typeof prefs.panelMax === 'number' && prefs.panelMax !== 45));
 
   /** One call to the Host half, or null when this Client cannot reach it. */
   async function hostCall(method, payload) {
@@ -899,6 +927,339 @@ function build(require) {
   const sameEntries = (left, right) =>
     left.length === right.length &&
     left.every((row, index) => row.id === right[index].id && row.label === right[index].label);
+
+  /* -------------------------------------------------------------- bridges */
+
+  /**
+   * Settings pages with no panel of their own.
+   *
+   * A Client plugin addresses its settings page with `settings.section`; the
+   * sidebar only lists `sidebar.panellist` entries, and the two registries are
+   * unrelated. A plugin that never registers a panel therefore has a reachable
+   * settings page and no way to open it from the navigation rail. This block
+   * gives each such page a panel of its own: a panellist row plus the `main`
+   * entry it addresses, whose body is the host's own renderer for that section.
+   *
+   * A slot entry's `registrant` names the Cordis fiber that registered it, but
+   * the client runner applies many plugins inside one fiber: in practice every
+   * plugin except the market reports the same name, so a registrant match cannot
+   * tell one plugin from another. Attribution is therefore by ownership of the
+   * navigation row: a settings id whose base name (with a trailing `-settings`
+   * removed) is an existing panel id, or whose label is an existing panel label,
+   * belongs to a plugin that already has a way in. Core settings ids are listed
+   * explicitly; they ship without a panel because that is the product decision,
+   * not a gap.
+   */
+  const CORE_SECTION_IDS = new Set(['account', 'general', 'models', 'agent-presets', 'plugins']);
+
+  const bridgeState = {
+    entries: new Map(),
+    labels: new Map(),
+    timer: null,
+    retries: new Set(),
+    retriesStarted: false,
+    syncing: false,
+    scans: 0,
+    unsub: null,
+  };
+
+  function registrantOf(entry) {
+    const options = (entry && entry.options) || {};
+    const value = (entry && entry.registrant) || options.registrant;
+    return typeof value === 'string' ? value : '';
+  }
+
+  function readSections(slots) {
+    try {
+      const raw = slots && typeof slots.entriesOfSlot === 'function' ? slots.entriesOfSlot(SLOT_SETTINGS) || [] : [];
+      return raw
+        .map((entry) => {
+          const options = (entry && entry.options) || {};
+          return {
+            id: typeof options.id === 'string' ? options.id : '',
+            label: options.label,
+            registrant: registrantOf(entry),
+            component: entry && entry.component,
+            inject: options.inject,
+            store: options.store,
+            locale: options.locale,
+          };
+        })
+        .filter((section) => section.id !== '');
+    } catch {
+      return [];
+    }
+  }
+
+  function panelEntries(slots) {
+    try {
+      return (slots && typeof slots.entriesOfSlot === 'function' ? slots.entriesOfSlot(SLOT_PANELS) || [] : [])
+        .map((entry) => entry && entry.options)
+        .filter((options) => options && typeof options.id === 'string' && options.id !== '')
+        .map((options) => ({ id: options.id, label: resolveLabel(options.label, options.id) }));
+    } catch {
+      return [];
+    }
+  }
+
+  function sectionBase(id) {
+    return id.endsWith('-settings') ? id.slice(0, -'-settings'.length) : id;
+  }
+
+  /**
+   * Every settings page whose plugin owns no sidebar entry.
+   *
+   * A plugin may expose more than one settings page; each becomes its own row,
+   * labelled with the plugin's own section label. A label already used by a real
+   * panel is suffixed with the settings id so two rows never read the same.
+   */
+  function bridgeCandidates(slots) {
+    const rows = panelEntries(slots).filter((row) => !row.id.startsWith(BRIDGE_PREFIX));
+    const panelIds = new Set(rows.map((row) => row.id));
+    const panelLabels = new Set(rows.map((row) => row.label));
+    // Real panel labels own their names; a bridged row must not steal one, and
+    // must not collide with another bridged row either.
+    const used = new Set(panelLabels);
+    const out = [];
+    const taken = new Set();
+    for (const section of readSections(slots)) {
+      if (CORE_SECTION_IDS.has(section.id)) continue;
+      const base = sectionBase(section.id);
+      let owned = panelIds.has(section.id) || panelIds.has(base);
+      if (!owned) {
+        for (const panelId of panelIds) {
+          if (panelId.endsWith('-' + base)) {
+            owned = true;
+            break;
+          }
+        }
+      }
+      if (owned) continue;
+      const label = resolveLabel(section.label, section.id);
+      if (panelLabels.has(label)) continue;
+      if (typeof section.component !== 'function') continue;
+      const bridgeId = BRIDGE_PREFIX + section.id;
+      if (bridgeId.length > LIMITS.key || taken.has(bridgeId)) continue;
+      taken.add(bridgeId);
+      const chosen = used.has(label) ? `${label} · ${section.id}` : label;
+      used.add(chosen);
+      out.push({
+        bridgeId,
+        sectionId: section.id,
+        label: chosen,
+        component: section.component,
+        inject: section.inject,
+        store: section.store,
+        locale: section.locale,
+      });
+    }
+    return out;
+  }
+
+  /** The layout's live selection, read through the public store when it exposes one. */
+  function activePanelId() {
+    try {
+      const layout = optionalService(ctxRef, 'layout');
+      const info = layout && layout.panelInfo;
+      const snapshot = info && typeof info.getSnapshot === 'function' ? info.getSnapshot() : info;
+      return snapshot && typeof snapshot.activePanelId === 'string' ? snapshot.activePanelId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function disposeBridge(id, record) {
+    bridgeState.entries.delete(id);
+    for (const dispose of record.disposers.slice().reverse()) {
+      try {
+        dispose();
+      } catch (error) {
+        console.warn(`[${PACKAGE}] bridge cleanup failed for "${id}"`, error);
+      }
+    }
+    // The main key this row addressed is gone, so a reader sitting on it would
+    // stare at an empty centre column. The Conversation is the only safe landing.
+    if (activePanelId() === id) {
+      try {
+        const layout = optionalService(ctxRef, 'layout');
+        if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(null);
+      } catch {
+        /* nothing was selected after all */
+      }
+    }
+  }
+
+  function syncBridges() {
+    const slots = ctxRef && ctxRef.slots;
+    if (!slots || typeof slots.register !== 'function' || bridgeState.syncing) return;
+    bridgeState.syncing = true;
+    bridgeState.scans += 1;
+    let changed = false;
+    try {
+      const enabled = prefsNow().bridge !== false;
+      watchSettings();
+      const sections = readSections(slots);
+      const panelIds = panelEntries(slots).map((row) => row.id);
+      const candidates = enabled ? bridgeCandidates(slots) : [];
+      const desired = new Set(candidates.map((candidate) => candidate.bridgeId));
+      bridgeState.labels = new Map(candidates.map((candidate) => [candidate.bridgeId, candidate.label]));
+      for (const [id, record] of Array.from(bridgeState.entries)) {
+        if (desired.has(id)) continue;
+        disposeBridge(id, record);
+        changed = true;
+      }
+      for (const candidate of candidates) {
+        if (bridgeState.entries.has(candidate.bridgeId)) continue;
+        const slotName = BRIDGE_SLOT_PREFIX + candidate.sectionId;
+        const record = { disposers: [] };
+        try {
+          record.disposers.push(
+            slots.register(
+              {
+                name: SLOT_MAIN,
+                key: candidate.bridgeId,
+                locale: NS,
+                children: { [slotName]: { kind: 'single', scope: 'root' } },
+              },
+              makeBridgePanel(candidate, slotName),
+            ),
+          );
+          // The settings shell owns the `settings.section` declaration, so its
+          // props-face renderer is not ours to call. Declaring one child slot of
+          // our own and re-registering the same component into it gives the
+          // section the host kit it expects (inject, locale, store, boundary)
+          // without touching the shell or the foreign registration.
+          record.disposers.push(
+            slots.register(
+              {
+                name: slotName,
+                inject: candidate.inject,
+                store: candidate.store,
+                locale: candidate.locale,
+              },
+              candidate.component,
+            ),
+          );
+          record.disposers.push(
+            slots.register(
+              {
+                name: SLOT_PANELS,
+                id: candidate.bridgeId,
+                order: BRIDGE_ORDER,
+                locale: NS,
+                label: () => bridgeState.labels.get(candidate.bridgeId) || candidate.label,
+              },
+              BridgeIcon,
+            ),
+          );
+          bridgeState.entries.set(candidate.bridgeId, record);
+          changed = true;
+        } catch (error) {
+          for (const dispose of record.disposers.slice().reverse()) {
+            try {
+              dispose();
+            } catch {
+              /* the pair is already half gone */
+            }
+          }
+          console.warn(`[${PACKAGE}] could not add a panel for "${candidate.sectionId}"`, error);
+        }
+      }
+      // Early scans run while plugins are still registering. Keeping a trace of
+      // exactly what the slot returned tells a later reader whether a missing
+      // row is a timing problem or an ownership guess that did not hold.
+      if (bridgeState.scans <= 8 || changed) {
+        reportHost({
+          kind: 'bridge-scan',
+          enabled,
+          scans: bridgeState.scans,
+          sections: sections.map((section) => `${section.id}:${section.registrant || '?'}`).join('|'),
+          panels: panelIds.join('|'),
+          ids: Array.from(bridgeState.entries.keys()).join(','),
+        });
+      }
+      if (changed) {
+        reportHost({
+          kind: 'bridge',
+          enabled,
+          ids: Array.from(bridgeState.entries.keys()).join(','),
+          sections: candidates.length,
+        });
+        // The diagnostics line in the settings card reads this count; without a
+        // re-render it would keep showing the value from before the sync.
+        emit();
+      }
+    } catch (error) {
+      console.warn(`[${PACKAGE}] bridge sync failed`, error);
+    } finally {
+      bridgeState.syncing = false;
+    }
+  }
+
+  function scheduleBridgeSync() {
+    if (bridgeState.timer) clearTimeout(bridgeState.timer);
+    bridgeState.timer = setTimeout(() => {
+      bridgeState.timer = null;
+      syncBridges();
+    }, BRIDGE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Watch the section registry.
+   *
+   * `subscribe` is trustworthy only once the slot is declared. The plugin runs
+   * before some of the plugins it bridges, so an early subscription can resolve
+   * to nothing and never be retried; the declaration callback calls this again.
+   */
+  function watchSettings() {
+    if (bridgeState.unsub) return;
+    const slots = ctxRef && ctxRef.slots;
+    if (!slots || typeof slots.subscribe !== 'function') return;
+    try {
+      const dispose = slots.subscribe(SLOT_SETTINGS, () => scheduleBridgeSync());
+      bridgeState.unsub = typeof dispose === 'function' ? dispose : () => {};
+    } catch {
+      /* not declared yet; the next scan or declaration retries */
+    }
+  }
+
+  function unwatchSettings() {
+    if (!bridgeState.unsub) return;
+    try {
+      bridgeState.unsub();
+    } catch {
+      /* the slot is already gone */
+    }
+    bridgeState.unsub = null;
+  }
+
+  function scheduleBridgeRetry(delay) {
+    const id = setTimeout(() => {
+      bridgeState.retries.delete(id);
+      if (ctxRef) syncBridges();
+    }, delay);
+    // Browsers return a number; Node returns an object. Letting the harness
+    // exit without waiting out the last boot scan keeps `npm run check` quick.
+    if (id && typeof id.unref === 'function') id.unref();
+    bridgeState.retries.add(id);
+  }
+
+  function scheduleBridgeRetries() {
+    if (bridgeState.retriesStarted) return;
+    bridgeState.retriesStarted = true;
+    for (const delay of BRIDGE_RETRY_MS) scheduleBridgeRetry(delay);
+  }
+
+  function disposeBridges() {
+    if (bridgeState.timer) {
+      clearTimeout(bridgeState.timer);
+      bridgeState.timer = null;
+    }
+    for (const id of Array.from(bridgeState.retries)) clearTimeout(id);
+    bridgeState.retries.clear();
+    unwatchSettings();
+    for (const [id, record] of Array.from(bridgeState.entries)) disposeBridge(id, record);
+  }
 
   /** The stored order, extended with every entry that is new since it was saved. */
   function normalize(prefs, entries) {
@@ -1447,6 +1808,9 @@ function build(require) {
     scheduleSaveToHost();
     emit();
     if (engineRef) engineRef.schedule();
+    // The bridge switch lives here too; toggling it must add or drop the rows
+    // right away rather than on the next unrelated registration.
+    scheduleBridgeSync();
   }
 
   function setDiag(patch) {
@@ -1477,6 +1841,8 @@ function build(require) {
       if (!stored || !hasContent(stored)) await hostCall('save', { prefs: chosen });
     }
     setDiag({ prefsSource: prefsSource.value, hostFile });
+    // The Host copy may carry the bridge switch with it.
+    scheduleBridgeSync();
   }
 
   const prefsNow = () => store.state.prefs;
@@ -1747,6 +2113,7 @@ function build(require) {
     plus: 'M12 6v12M6 12h12',
     eye: 'M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z',
     eyeOff: 'M2.5 12S6 6.5 12 6.5c1.6 0 3 .45 4.2 1.1M21.5 12S18 17.5 12 17.5c-1.6 0-3-.45-4.2-1.1M4 4l16 16',
+    back: 'M14.5 6.5 9 12l5.5 5.5',
   };
 
   /** One 16px line glyph, one 1.5 stroke, colours inherited from the text role. */
@@ -1806,6 +2173,105 @@ function build(require) {
   }
 
   const PanelIcon = SlidersIcon;
+
+  /**
+   * A page glyph with text lines: the settings page, not the plugin's own icon
+   * (that one belongs to the plugin and is not available to the bridge).
+   */
+  function BridgeIcon(props) {
+    const size = props && typeof props.size === 'number' ? props.size : 18;
+    const active = Boolean(props && props.active);
+    return h(
+      'svg',
+      {
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        'aria-hidden': true,
+        style: { display: 'block', opacity: active ? 1 : 0.78 },
+      },
+      h('rect', {
+        x: 3.5,
+        y: 4.5,
+        width: 17,
+        height: 15,
+        rx: 2.5,
+        stroke: 'currentColor',
+        strokeWidth: 1.6,
+      }),
+      h('path', {
+        d: 'M8 9.5h8M8 12h5M8 14.5h8',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+      }),
+    );
+  }
+
+  /**
+   * One bridged page: a back bar, then the host's renderer for the section.
+   *
+   * The settings shell owns the `settings.section` declaration, so the ctx-level
+   * `slots.renderSlot` cannot reach it: that entry point only renders `root`, and
+   * a child slot is renderable only through the props face of the entry that
+   * declared it. Each bridge therefore declares its own single-child slot and
+   * re-registers the section component into it (see `syncBridges`), and renders
+   * that slot through the `renderSlot` prop the host hands this component. The
+   * host still builds the section's kit — inject, locale, store, boundary and
+   * hooks all stay its own. The owner prop is the same `close` the settings shell
+   * passes, wired to the Conversation because this page has no dialog to close.
+   */
+  function makeBridgePanel(candidate, slotName) {
+    const back = () => {
+      try {
+        const layout = optionalService(ctxRef, 'layout');
+        if (layout && typeof layout.selectPanel === 'function') layout.selectPanel(null);
+      } catch {
+        /* the Conversation is already showing */
+      }
+    };
+    return function BridgePanel(props) {
+      const renderSlot = props && typeof props.renderSlot === 'function' ? props.renderSlot : null;
+      let node = null;
+      try {
+        if (renderSlot) node = renderSlot(slotName, { close: back }, {});
+      } catch (error) {
+        console.warn(`[${PACKAGE}] could not render settings page "${candidate.sectionId}"`, error);
+      }
+      return h(
+        'div',
+        { className: 'dpc-root dpc-bridge' },
+        h(
+          'div',
+          { className: 'dpc-page dpc-bridgePage' },
+          h(
+            'div',
+            { className: 'dpc-bridgeBar' },
+            h(
+              'button',
+              { type: 'button', className: 'dpc-link dpc-bridgeBack', onClick: back },
+              h(Icon, { name: 'back' }),
+              h('span', null, t('bridgeBack')),
+            ),
+            h(
+              'span',
+              { className: 'dpc-bridgeTags' },
+              h('span', { className: 'dpc-bridgeTag' }, t('bridgeTag')),
+              h('span', { className: 'dpc-bridgeFrom' }, fill(t('bridgeFrom'), { p: candidate.sectionId })),
+            ),
+          ),
+          node
+            ? h('div', { className: 'dpc-bridgeBody' }, node)
+            : h(
+                'section',
+                { className: 'dpc-card dpc-empty' },
+                h('p', { className: 'dpc-emptyTitle' }, t('bridgeMissing')),
+              ),
+        ),
+      );
+    };
+  }
 
   /** The entry's own glyph, borrowed from the slot it registered. */
   function Glyph(props) {
@@ -2209,6 +2675,7 @@ function build(require) {
     // is the only place the guard, the cap and the fold switch are explained.
     const layoutOn = prefs.guard !== false;
     const foldingOn = prefs.collapse !== false;
+    const bridgeOn = prefs.bridge !== false;
     const capNow = typeof prefs.panelMax === 'number' ? prefs.panelMax : 45;
     const setLayout = (patch) => commit({ ...prefsNow(), ...patch });
     const layoutSwitch = (on, label, onClick) =>
@@ -2250,6 +2717,14 @@ function build(require) {
         t('layoutCollapse'),
         t('layoutCollapseHint'),
         layoutSwitch(foldingOn, t('layoutCollapse'), () => setLayout({ collapse: !foldingOn })),
+      ),
+      // The switch is the only way back for a reader who does not want the
+      // extra rows: turning it off also disposes the registrations, not just
+      // the display, so the host list and this page agree.
+      layoutRow(
+        t('layoutBridge'),
+        t('layoutBridgeHint'),
+        layoutSwitch(bridgeOn, t('layoutBridge'), () => setLayout({ bridge: !bridgeOn })),
       ),
       layoutRow(
         t('layoutMax'),
@@ -2350,6 +2825,7 @@ function build(require) {
           state.inventory && state.inventory.repeated ? t('diagYes') : t('diagNo'),
           true,
         ),
+        diagRow(t('diagBridge'), String(bridgeState.entries.size), true),
         diagnostics && diagnostics.error ? h('dt', { key: 'et' }, 'error') : null,
         diagnostics && diagnostics.error
           ? h('dd', { key: 'ed', className: 'dpc-error' }, diagnostics.error)
@@ -2525,6 +3001,16 @@ function build(require) {
     .dpc-segmentBtn--on{background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.22));color:var(--dsw-alias-label-primary,#8a8a8a)}
     .dpc-segmentBtn:disabled{opacity:.4;cursor:default}
 
+    /* A bridged settings page: its own bar, then the host-rendered section. */
+    .dpc-bridgePage{gap:16px}
+    .dpc-bridgeBar{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:40px;padding-bottom:8px;border-bottom:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.14))}
+    .dpc-bridgeBack{display:inline-flex;align-items:center;gap:6px;margin-left:-8px}
+    .dpc-bridgeBack .dpc-ico{width:14px;height:14px}
+    .dpc-bridgeTags{display:flex;align-items:center;gap:8px;min-width:0}
+    .dpc-bridgeTag{flex:none;padding:2px 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:999px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
+    .dpc-bridgeFrom{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-bridgeBody{min-width:0}
+
     @media (max-width:1000px){
       /* Below the column width the frame becomes the gutter instead of pushing
          content past the window edge. */
@@ -2534,6 +3020,7 @@ function build(require) {
       .dpc-row{flex-wrap:wrap;gap:8px}
       .dpc-rowText{flex:1 1 120px}
       .dpc-tags{order:8}
+      .dpc-bridgeFrom{display:none}
     }
     /* The settings column is narrower than the page column: drop what is only
        nice-to-have there instead of letting the row overflow. */
@@ -2672,10 +3159,24 @@ function build(require) {
       // A registration, a rename or a locale switch changes the list this plugin
       // lays out, so every one of them re-runs the pass.
       if (typeof ctx.slots.subscribe === 'function') {
-        ctx.effect(() => ctx.slots.subscribe(SLOT_PANELS, () => engineRef && engineRef.schedule()), `${PACKAGE}: panel entries`);
+        ctx.effect(
+          () =>
+            ctx.slots.subscribe(SLOT_PANELS, () => {
+              if (engineRef) engineRef.schedule();
+              scheduleBridgeSync();
+            }),
+          `${PACKAGE}: panel entries`,
+        );
       }
       if (locale && typeof locale.subscribe === 'function') {
-        ctx.effect(() => locale.subscribe(() => engineRef && engineRef.schedule()), `${PACKAGE}: labels`);
+        ctx.effect(
+          () =>
+            locale.subscribe(() => {
+              if (engineRef) engineRef.schedule();
+              scheduleBridgeSync();
+            }),
+          `${PACKAGE}: labels`,
+        );
       }
 
       ctx.slots.inject(SLOT_MAIN, () => {
@@ -2714,6 +3215,35 @@ function build(require) {
           return undefined;
         }
       });
+
+      // A bridged page follows three registries: the settings sections it
+      // mirrors, the panels it must not duplicate, and the locale that names
+      // both. Each declaration is its own readiness signal, so the sync runs
+      // once the slots exist and again on every later change.
+      const kickBridge = () => {
+        try {
+          watchSettings();
+          scheduleBridgeSync();
+          scheduleBridgeRetries();
+        } catch (error) {
+          console.warn(`[${PACKAGE}] bridge scheduling failed`, error);
+        }
+      };
+      try {
+        // Re-install the watch on every declaration: before the slot exists
+        // `subscribe` cannot observe the section registry, and a stale
+        // subscription would miss the pages that register after us.
+        ctx.slots.inject(SLOT_SETTINGS, () => {
+          unwatchSettings();
+          watchSettings();
+          kickBridge();
+        });
+        ctx.slots.inject(SLOT_PANELS, kickBridge);
+      } catch (error) {
+        console.warn(`[${PACKAGE}] bridge slots unavailable`, error);
+      }
+      ctx.effect(() => () => disposeBridges(), `${PACKAGE}: bridge cleanup`);
+      kickBridge();
     try { window.__dpcApplied = true; } catch { /* ignore */ }
   }
 
@@ -2736,7 +3266,9 @@ function build(require) {
   }
 
   return {
-    inject: ['slots'],
+    // `layout` is only read (never patched): the bridge's back button and its
+    // selection fallback call the public selectPanel action.
+    inject: ['slots', 'layout'],
     // Pure helpers the browser harness drives directly, without a Cordis context.
     testables: { createEngine, mapButtons, readEntries, normalize, sanitize, store, reorderList, applyInner, setCtx: (value) => { ctxRef = value; } },
     apply(ctx) {

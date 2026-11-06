@@ -27,12 +27,28 @@ for (const marker of [
   'layoutGuard',
   'layoutMaxNone',
   'toggleCollapse',
+  'layoutBridge',
+  'dpc-bridgeBar',
+  'registrantOf',
 ]) {
   expect(client.includes(marker), 'client.js lost ' + marker);
 }
 
+// A bridged row is only as good as the two halves it registers: a keyed main
+// entry the layout can select, and the host-rendered settings section it shows.
+expect(client.includes('BRIDGE_ORDER = 85'), 'bridged rows lost their order slot');
+expect(client.includes('out.bridge = raw.bridge !== false'), 'the bridge switch is not persisted');
+expect(
+  client.includes('BRIDGE_SLOT_PREFIX') &&
+    client.includes('children: { [slotName]: { kind: \'single\', scope: \'root\' } }') &&
+    client.includes('renderSlot(slotName, { close: back }, {})'),
+  'the bridged page no longer renders through its own child slot',
+);
+expect(/\.dpc-bridgeBar\{[^}]*min-height:40px/.test(client), 'the bridge bar lost its 40px row height');
+
 expect(client.includes("const BUILD_STAMP = 'dsh-panel-control/" + pkg.version + "'"), 'BUILD_STAMP and package.json version disagree');
 expect(pkg.scripts && String(pkg.scripts.check).includes('layout-smoke'), 'npm run check no longer runs this gate');
+expect(pkg.scripts && String(pkg.scripts.check).includes('bridge-smoke'), 'npm run check no longer runs the bridge gate');
 expect(/\[data-dpc-list\]\{[^}]*overflow-y:auto/.test(client), 'the panel list is not scrollable');
 expect(/\[data-dpc-list\]\{[^}]*max-height:max\(120px,var\(--dpc-panellist-max,45vh\)\)/.test(client), 'the panel list lost its height cap');
 expect(/\[data-dpc-region\]\{[^}]*min-height/.test(client), 'the region below the list lost its floor');
