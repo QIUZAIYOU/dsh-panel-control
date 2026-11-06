@@ -1,7 +1,10 @@
 {
   "name": "dsh-panel-control",
-  "version": "0.8.3",
+  "version": "0.9.1",
   "type": "module",
+  "engines": {
+    "dsh": ">=0.2.1-rc.3"
+  },
   "description": "Manage the global panel navigation at the top of the DSH sidebar: reorder, hide and group every entry, with the layout persisted per installation.",
   "keywords": [
     "dsh",
@@ -50,7 +53,7 @@
     "url": "https://github.com/QIUZAIYOU/dsh-panel-control/issues"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node scripts/host-smoke.mjs && node scripts/layout-smoke.mjs && node scripts/bridge-smoke.mjs",
+    "check": "node --check index.js && node --check client.js && node scripts/host-smoke.mjs && node scripts/layout-smoke.mjs && node scripts/bridge-smoke.mjs && node scripts/names-smoke.mjs",
     "smoke": "node scripts/host-smoke.mjs",
     "doctor": "node scripts/profile-doctor.mjs",
     "enable": "node scripts/enable-local.mjs"

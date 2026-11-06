@@ -56,8 +56,24 @@ function check(name, ok, detail) {
 
 // The registry currently holds revision "rev-now" for this package; the page
 // below asks for "rev-old", which is the 404 that silently drops a plugin.
+const PKG_DIR = path.join(STATE, 'pkg-scan');
+await fs.mkdir(PKG_DIR, { recursive: true });
+const pkgFile = (name, body) => {
+  const file = path.join(PKG_DIR, name);
+  return fs.writeFile(file, body).then(() => file);
+};
+const pkgPaths = {
+  'dsh-panel-control': await pkgFile(
+    'panel.js',
+    "const SLOT = 'sidebar.panellist';\nconst KEY = 'panel-control';\nregister({ name: SLOT, id: KEY });\n",
+  ),
+  dshmarket: await pkgFile('market.js', "register({ name: 'sidebar.panellist', id: 'dsh-market' });\n"),
+  'billion-context': await pkgFile('bili.js', "register({ name: 'settings.section', id: 'bili' });\n"),
+};
+
 const clientModulesStub = {
   served: [],
+  clientPath: (id) => pkgPaths[id] || null,
   graph: () => ({
     rev: 'rev-test',
     release: 'rel',
@@ -65,6 +81,8 @@ const clientModulesStub = {
       { id: 'a' },
       { id: 'b' },
       { id: 'dsh-panel-control', rev: 'rev-now', url: 'plugins/??dsh-panel-control/client.js&rev=rev-now' },
+      { id: 'dshmarket', rev: 'rev-now', url: 'plugins/??dshmarket/client.js&rev=rev-now' },
+      { id: 'billion-context', rev: 'rev-now', url: 'plugins/??billion-context/client.js&rev=rev-now' },
       // The plugin that sits next to this one in the real profile: it carries no
       // fallback of its own, so a retired revision used to drop it silently
       // while the manager still reported it running.
@@ -185,11 +203,11 @@ if (route) {
     text: async () => JSON.stringify(payload),
     json: async () => payload,
   });
-  const envelope = (method) => ({
+  const envelope = (method, payload = {}) => ({
     type: 'client-request',
     rpcId: 'r1',
     method: 'dsh-panel-control/classify',
-    payload: { method, payload: {} },
+    payload: { method, payload },
   });
   try {
     const response = await route.fetch(request(envelope('inventory')));
@@ -247,9 +265,27 @@ if (route) {
     check(
       'inventory ids',
       Array.isArray(body.result.value.ids) &&
-        body.result.value.ids.join() === 'a,b,dsh-panel-control,dsh-workspace-control',
+        body.result.value.ids.join() === 'a,b,dsh-panel-control,dshmarket,billion-context,dsh-workspace-control',
       body.result.value && body.result.value.ids.join(),
     );
+    const pkgResponse = await route.fetch(
+      request(
+        envelope('packages', {
+          ids: [
+            { id: 'panel-control', slot: 'sidebar.panellist' },
+            { id: 'dsh-market', slot: 'sidebar.panellist' },
+            { id: 'bili', slot: 'settings.section' },
+            { id: 'nobody', slot: 'sidebar.panellist' },
+          ],
+        }),
+      ),
+    );
+    const pkgBody = await pkgResponse.json();
+    const packages = (pkgBody.result && pkgBody.result.value && pkgBody.result.value.packages) || {};
+    check('packages maps panel id', packages['panel-control'] === 'dsh-panel-control', JSON.stringify(packages));
+    check('packages maps market id', packages['dsh-market'] === 'dshmarket', JSON.stringify(packages));
+    check('packages maps settings id', packages.bili === 'billion-context', JSON.stringify(packages));
+    check('packages leaves unknown ids unmapped', !packages.nobody, JSON.stringify(packages));
   } catch (error) {
     check('inventory answers', false, error.message);
   }

@@ -30,6 +30,10 @@ for (const marker of [
   'layoutBridge',
   'dpc-bridgeBar',
   'registrantOf',
+  'dpc-nameTag',
+  'data-dpc-label',
+  'applyNames',
+  'layoutTags',
 ]) {
   expect(client.includes(marker), 'client.js lost ' + marker);
 }
@@ -45,6 +49,13 @@ expect(
   'the bridged page no longer renders through its own child slot',
 );
 expect(/\.dpc-bridgeBar\{[^}]*min-height:40px/.test(client), 'the bridge bar lost its 40px row height');
+
+// A renamed row keeps its host label addressable while the visible title changes;
+// the original-name tag is opt-out, and the group menu must not sit on transparency.
+expect(client.includes('out.tags = raw.tags !== false'), 'the original-name tag switch is not persisted');
+expect(/\.dpc-nameTag\{[^}]*pointer-events:none/.test(client), 'the original-name tag can intercept clicks');
+expect(/\.dpc-menu\{[^}]*background-color:var\(--dsw-alias-bg-layer-2/.test(client), 'the group menu lost its opaque base');
+expect(pkg.scripts && String(pkg.scripts.check).includes('names-smoke'), 'npm run check no longer runs the names gate');
 
 expect(client.includes("const BUILD_STAMP = 'dsh-panel-control/" + pkg.version + "'"), 'BUILD_STAMP and package.json version disagree');
 expect(pkg.scripts && String(pkg.scripts.check).includes('layout-smoke'), 'npm run check no longer runs this gate');

@@ -486,6 +486,7 @@ async function handle(scope, request) {
     if (method === 'load') return reply(rpcId, await loadPreferences());
     if (method === 'save') return reply(rpcId, await savePreferences(call.payload));
     if (method === 'inventory') return reply(rpcId, inventorySnapshot(scope));
+    if (method === 'packages') return reply(rpcId, await packageMap(scope, call.payload));
     if (method === 'report') {
       const detail = isRecord(call.payload) ? call.payload : {};
       const text = JSON.stringify(detail).slice(0, 4_000);
@@ -534,6 +535,126 @@ function inventorySnapshot(scope) {
       ids: entries.map((entry) => String(entry && entry.id)).filter(Boolean),
     },
   };
+}
+
+/**
+ * Which package serves each panel / settings section.
+ *
+ * A slot entry carries no package field: `registrant` is the fiber that ran the
+ * registration, and the client runner applies most plugins inside one shared
+ * fiber. The package name exists only in the Host's module graph, so this maps
+ * an entry id to its module id by reading each module's served bundle and
+ * looking for the registration site: the slot literal plus the id as a quoted
+ * string. Constant-style registrations keep the two strings close together;
+ * an id is only accepted from a module that contains both.
+ */
+const PACKAGE_SCAN_LIMIT = 8 * 1024 * 1024;
+const PACKAGE_CACHE_KEPT = 4;
+const packageCache = new Map();
+
+/**
+ * How strongly one bundle looks like the registration of `id` in `slot`.
+ *
+ * `strong` means the quoted id sits immediately after an `id:` / `key:` field
+ * (or an `id =` / `key =` assignment), which is the shape of a slot
+ * registration. Everything else is only a distance guess and must be close;
+ * a long comment can mention both words without registering anything.
+ */
+function slotMatch(text, slot, id) {
+  const slots = [];
+  let at = text.indexOf(slot);
+  while (at !== -1) {
+    slots.push(at);
+    at = text.indexOf(slot, at + slot.length);
+  }
+  if (slots.length === 0) return null;
+  let strong = Infinity;
+  let weak = Infinity;
+  for (const needle of [`'${id}'`, `"${id}"`, '`' + id + '`']) {
+    let pos = text.indexOf(needle);
+    while (pos !== -1) {
+      let distance = Infinity;
+      for (const slotAt of slots) distance = Math.min(distance, Math.abs(pos - slotAt));
+      const before = text.slice(Math.max(0, pos - 48), pos);
+      if (/(?:^|[\s,{;])(?:id|key)\s*[:=]\s*$/.test(before)) strong = Math.min(strong, distance);
+      else weak = Math.min(weak, distance);
+      pos = text.indexOf(needle, pos + needle.length);
+    }
+  }
+  if (Number.isFinite(strong)) return { strong: true, distance: strong };
+  if (weak <= 400) return { strong: false, distance: weak };
+  return null;
+}
+
+async function readModuleText(modules, id, texts) {
+  if (texts.has(id)) return texts.get(id);
+  let text = null;
+  try {
+    const file = modules.clientPath(id);
+    if (file) {
+      const stat = await fs.stat(file);
+      if (stat.isFile() && stat.size <= PACKAGE_SCAN_LIMIT) text = await fs.readFile(file, 'utf8');
+    }
+  } catch {
+    text = null;
+  }
+  texts.set(id, text);
+  return text;
+}
+
+async function packageMap(scope, payload) {
+  const modules = clientModules || serviceOf(scope, 'clientModules');
+  if (!modules || typeof modules.graph !== 'function' || typeof modules.clientPath !== 'function') {
+    return refusal('packages-unavailable', 'The Host module graph does not expose client paths.');
+  }
+  const graph = modules.graph();
+  if (!graph || !Array.isArray(graph.entries)) {
+    return refusal('packages-unavailable', 'The Host module graph is not readable.');
+  }
+  const requested = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(payload && payload.ids) ? payload.ids : []) {
+    if (!isRecord(raw)) continue;
+    const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+    const slot = raw.slot === 'settings.section' ? 'settings.section' : 'sidebar.panellist';
+    if (!id || id.length > 120 || seen.has(slot + ':' + id)) continue;
+    seen.add(slot + ':' + id);
+    requested.push({ id, slot });
+  }
+  if (requested.length === 0) return { ok: true, value: { packages: {}, rev: graph.rev || null } };
+  // Stable order makes two calls for the same set share the cache entry.
+  requested.sort((left, right) => (left.slot + ':' + left.id).localeCompare(right.slot + ':' + right.id));
+  const key = String(graph.rev || '') + '|' + requested.map((row) => row.slot + ':' + row.id).join(',');
+  if (packageCache.has(key)) return { ok: true, value: packageCache.get(key) };
+
+  const packages = {};
+  const best = new Map();
+  const texts = new Map();
+  for (const entry of graph.entries) {
+    const moduleId = entry && typeof entry.id === 'string' ? entry.id : '';
+    if (!moduleId) continue;
+    const text = await readModuleText(modules, moduleId, texts);
+    if (!text) continue;
+    for (const want of requested) {
+      if (!text.includes(want.slot)) continue;
+      // A bundle may mention a generic id (the plugin manager's id is also a
+      // dictionary word). A real registration field wins over a mere mention,
+      // and within the same tier the closest match wins over graph order.
+      const match = slotMatch(text, want.slot, want.id);
+      if (!match) continue;
+      const previous = best.get(want.id);
+      if (previous) {
+        if (previous.strong && !match.strong) continue;
+        if (previous.strong === match.strong && previous.distance <= match.distance) continue;
+      }
+      best.set(want.id, { moduleId, strong: match.strong, distance: match.distance });
+    }
+  }
+  for (const [id, match] of best) packages[id] = match.moduleId;
+  const value = { packages, rev: typeof graph.rev === 'string' ? graph.rev : null };
+  packageCache.set(key, value);
+  while (packageCache.size > PACKAGE_CACHE_KEPT) packageCache.delete(packageCache.keys().next().value);
+  return { ok: true, value };
 }
 
 /**

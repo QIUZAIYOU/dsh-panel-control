@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.8.3';
+  const BUILD_STAMP = 'dsh-panel-control/0.9.1';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -348,9 +348,10 @@ function build(require) {
     diagYes: { zh: '是', en: 'yes' },
     diagNo: { zh: '否', en: 'no' },
     hint: {
-      zh: '拖行首的把手排序；隐藏的入口仍留在列表里，随时可以放回来。',
-      en: 'Drag the handle at the start of a row to reorder it; a hidden entry stays in this list and can come back at any time.',
+      zh: '拖行首的把手排序；点铅笔可以改显示名，改过名的入口会在侧栏右侧显示包名。隐藏的入口仍留在列表里，随时可以放回来。',
+      en: 'Drag the handle at the start of a row to reorder it; use the pencil to rename an entry, and a renamed row shows its package name on the right in the sidebar. A hidden entry stays in this list and can come back at any time.',
     },
+    renameIt: { zh: '修改显示名', en: 'Rename entry' },
     dragHint: { zh: '拖动排序', en: 'Drag to reorder' },
     locked: { zh: '固定显示', en: 'always shown' },
     lockedHint: {
@@ -395,6 +396,11 @@ function build(require) {
     bridgeFrom: { zh: '来自 {p}', en: 'From {p}' },
     bridgeMissing: { zh: '这个设置页已经不可用。', en: 'This settings page is no longer available.' },
     diagBridge: { zh: '补全入口', en: 'bridged entries' },
+    layoutTags: { zh: '包名标签', en: 'Package tag' },
+    layoutTagsHint: {
+      zh: '改过显示名的入口会在侧栏行右侧显示插件包名（省略 dsh- 前缀）；关掉后全部隐藏。',
+      en: 'A renamed entry shows its plugin package name (with the dsh- prefix trimmed) in a small tag on the right of its sidebar row. Turn this off to hide them all.',
+    },
     layoutCollapseAll: { zh: '全部收起', en: 'Fold all' },
     layoutExpandAll: { zh: '全部展开', en: 'Unfold all' },
     layoutCollapseOne: { zh: '点此收起', en: 'click to fold' },
@@ -487,6 +493,8 @@ function build(require) {
     guard: true,
     collapse: true,
     bridge: true,
+    names: {},
+    tags: true,
     panelMax: 45,
   });
 
@@ -498,7 +506,17 @@ function build(require) {
    * would then build that many separators. The numbers here are far above any
    * real sidebar and turn a hostile or corrupted store into a cheap no-op.
    */
-  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, collapsed: 200, groups: 24, assign: 400, name: 40, key: 120 };
+  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, collapsed: 200, groups: 24, assign: 400, names: 200, name: 40, key: 120 };
+
+  /** Trim, flatten and cap a user-visible name. Returns '' when it is unusable. */
+  function cleanName(value) {
+    if (typeof value !== 'string') return '';
+    return value
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, LIMITS.name);
+  }
 
   /** Dedupe, drop anything that is not a usable id, and stop at `cap`. */
   function uniqueIds(raw, cap) {
@@ -553,6 +571,20 @@ function build(require) {
         kept += 1;
       }
     }
+    if (raw.names && typeof raw.names === 'object') {
+      let kept = 0;
+      for (const [panelId, value] of Object.entries(raw.names)) {
+        if (kept >= LIMITS.names) break;
+        if (typeof panelId !== 'string' || panelId === '' || panelId.length > LIMITS.key) continue;
+        const name = cleanName(value);
+        if (!name) continue;
+        out.names[panelId] = name;
+        kept += 1;
+      }
+    }
+    // Renames are opt-in per entry, so a missing field means "no custom names".
+    // The tag switch is the opposite: old files never had it and must get it on.
+    out.tags = raw.tags !== false;
     out.auto = raw.auto === true;
     return out;
   }
@@ -587,6 +619,8 @@ function build(require) {
       prefs.guard === false ||
       prefs.collapse === false ||
       prefs.bridge === false ||
+      prefs.tags === false ||
+      Object.keys(prefs.names || {}).length > 0 ||
       (typeof prefs.panelMax === 'number' && prefs.panelMax !== 45));
 
   /** One call to the Host half, or null when this Client cannot reach it. */
@@ -898,6 +932,32 @@ function build(require) {
     return fallback;
   }
 
+  /** The user's own name for an entry, or '' when it was never renamed. */
+  function customName(prefs, id) {
+    const names = prefs && prefs.names;
+    if (!names || typeof names !== 'object') return '';
+    const value = names[id];
+    return typeof value === 'string' ? cleanName(value) : '';
+  }
+
+  /** What the sidebar and the manager row should show for this entry. */
+  function displayName(prefs, id, fallback) {
+    return customName(prefs, id) || fallback;
+  }
+
+  /**
+   * A package name shortened into a tag: scope gone, `dsh-` gone, `client-ui-`
+   * gone. `dsh-panel-control` and `dshmarket` both read as their product name.
+   */
+  function packageLabel(name) {
+    if (typeof name !== 'string') return '';
+    return name
+      .replace(/^@[^/]+\//, '')
+      .replace(/^dsh-?/, '')
+      .replace(/^client-ui-/, '')
+      .trim();
+  }
+
   /**
    * The sidebar's own list: every registered entry, sorted exactly the way the
    * sidebar sorts it (`order`, then registration order).
@@ -962,6 +1022,84 @@ function build(require) {
     scans: 0,
     unsub: null,
   };
+
+  /**
+   * Panel/section id -> the package that registers it.
+   *
+   * The slot entry has no package field and its `registrant` is shared by most
+   * plugins, so the Host resolves ownership from its module graph. The map stays
+   * empty until that answer arrives; the tag falls back to the id meanwhile.
+   */
+  const packageState = {
+    map: Object.create(null),
+    loading: false,
+    key: '',
+    pending: '',
+  };
+
+  function packageTagFor(id) {
+    const pkg = packageState.map[id];
+    return packageLabel(pkg) || packageLabel(id);
+  }
+
+  /**
+   * Ask the Host which package each visible row belongs to.
+   *
+   * Scans are de-duplicated by the exact id set, so the engine's many passes and
+   * every bridge re-sync cost one call per set rather than one per pass.
+   */
+  async function ensurePackages(force) {
+    const records = [];
+    const seen = new Set();
+    const add = (id, slot) => {
+      if (typeof id !== 'string' || id === '' || seen.has(slot + ':' + id)) return;
+      seen.add(slot + ':' + id);
+      records.push({ id, slot });
+    };
+    for (const entry of store.state.entries) {
+      if (entry.id.startsWith(BRIDGE_PREFIX)) continue;
+      add(entry.id, SLOT_PANELS);
+    }
+    for (const record of bridgeState.entries.values()) {
+      if (record && typeof record.sectionId === 'string') add(record.sectionId, SLOT_SETTINGS);
+    }
+    if (records.length === 0) return;
+    records.sort((left, right) => (left.slot + ':' + left.id).localeCompare(right.slot + ':' + right.id));
+    const key = records.map((row) => row.slot + ':' + row.id).join('|');
+    if (!force && key === packageState.key) return;
+    if (packageState.loading) {
+      packageState.pending = key;
+      return;
+    }
+    packageState.key = key;
+    packageState.loading = true;
+    try {
+      const value = await hostCall('packages', { ids: records });
+      const packages = value && value.packages;
+      if (!packages || typeof packages !== 'object') return;
+      let changed = false;
+      for (const [id, pkg] of Object.entries(packages)) {
+        if (typeof pkg !== 'string' || pkg === '') continue;
+        if (packageState.map[id] === pkg) continue;
+        packageState.map[id] = pkg;
+        changed = true;
+      }
+      // A bridge row's own id is synthetic; its package is the section's.
+      for (const [bridgeId, record] of bridgeState.entries) {
+        const pkg = record && packageState.map[record.sectionId];
+        if (pkg && packageState.map[bridgeId] !== pkg) {
+          packageState.map[bridgeId] = pkg;
+          changed = true;
+        }
+      }
+      if (changed && engineRef) engineRef.schedule();
+    } finally {
+      packageState.loading = false;
+      const next = packageState.pending;
+      packageState.pending = '';
+      if (next && next !== packageState.key) void ensurePackages();
+    }
+  }
 
   function registrantOf(entry) {
     const options = (entry && entry.options) || {};
@@ -1111,7 +1249,7 @@ function build(require) {
       for (const candidate of candidates) {
         if (bridgeState.entries.has(candidate.bridgeId)) continue;
         const slotName = BRIDGE_SLOT_PREFIX + candidate.sectionId;
-        const record = { disposers: [] };
+        const record = { sectionId: candidate.sectionId, disposers: [] };
         try {
           record.disposers.push(
             slots.register(
@@ -1189,6 +1327,9 @@ function build(require) {
         // re-render it would keep showing the value from before the sync.
         emit();
       }
+      // New bridge rows (or a first scan that finally sees the real rows) need
+      // their package names; the call is keyed, so repeated scans are free.
+      void ensurePackages();
     } catch (error) {
       console.warn(`[${PACKAGE}] bridge sync failed`, error);
     } finally {
@@ -1316,7 +1457,9 @@ function build(require) {
     const used = new Set();
     const byLabel = new Map();
     for (const button of buttons) {
-      const label = button.getAttribute('aria-label') || '';
+      // A renamed row keeps its original label in `data-dpc-label`: the visible
+      // text and aria-label change, but the entry it belongs to does not.
+      const label = button.getAttribute('data-dpc-label') || button.getAttribute('aria-label') || '';
       if (!byLabel.has(label)) byLabel.set(label, []);
       byLabel.get(label).push(button);
     }
@@ -1335,7 +1478,7 @@ function build(require) {
       // Labels that agree prove the two lists are the same list; a button with no
       // label at all is no evidence either way, so it may be filled positionally.
       const sameOrder = loose.every((entry, index) => {
-        const label = rest[index].getAttribute('aria-label') || '';
+        const label = rest[index].getAttribute('data-dpc-label') || rest[index].getAttribute('aria-label') || '';
         return label === '' || label === entry.label;
       });
       // A build that labels rows in wording this plugin never sees ("IM 机器人"
@@ -1447,7 +1590,10 @@ function build(require) {
         if (!entry.label) continue;
         let button = null;
         try {
-          button = document.querySelector(`button[aria-label="${cssEscape(entry.label)}"]`);
+          const label = cssEscape(entry.label);
+          button = document.querySelector(
+            `button[data-dpc-label="${label}"], button[aria-label="${label}"]`,
+          );
         } catch {
           button = null;
         }
@@ -1595,6 +1741,74 @@ function build(require) {
       }
     };
 
+    /** The title node of a host panel row: the only direct span that is not the
+     *  aria-hidden glyph and not the original-name tag this plugin adds. */
+    const titleSpanOf = (button) => {
+      for (const child of Array.from(button.children || [])) {
+        if (child.tagName !== 'SPAN') continue;
+        const className = typeof child.className === 'string' ? child.className : '';
+        if (className.split(/\s+/).includes('dpc-nameTag')) continue;
+        if (child.getAttribute('aria-hidden') === 'true') continue;
+        return child;
+      }
+      return null;
+    };
+
+    /**
+     * Rename rows in the host sidebar, and keep the original label visible in a
+     * small tag. The host owns this DOM, so this is a pure display overlay: the
+     * entry id, its slot registration and every other preference are untouched.
+     */
+    const applyNames = (map, plan, wide) => {
+      const tagsOn = plan.prefs.tags !== false;
+      const byId = new Map(plan.entries.map((entry) => [entry.id, entry]));
+      for (const [id, button] of map) {
+        try {
+          const entry = byId.get(id);
+          if (!entry) continue;
+          const custom = customName(plan.prefs, id);
+          const shown = custom || entry.label;
+          // Keep the original label addressable: mapButtons() must keep matching
+          // the same row after the user renames it.
+          if (button.getAttribute('data-dpc-label') !== entry.label) {
+            button.setAttribute('data-dpc-label', entry.label);
+          }
+          if (button.getAttribute('aria-label') !== shown) button.setAttribute('aria-label', shown);
+          const title = titleSpanOf(button);
+          if (title && title.textContent !== shown) title.textContent = shown;
+          let tag = null;
+          for (const child of Array.from(button.children || [])) {
+            const className = typeof child.className === 'string' ? child.className : '';
+            if (className.split(/\s+/).includes('dpc-nameTag')) tag = child;
+          }
+          // Only a renamed row needs the tag: it identifies the plugin by its
+          // package (`dsh-` trimmed), which a custom display name can hide.
+          const tagText = packageTagFor(id);
+          const wantTag = Boolean(
+            wide &&
+              tagsOn &&
+              custom &&
+              custom !== entry.label &&
+              tagText &&
+              tagText.toLowerCase() !== shown.toLowerCase(),
+          );
+          if (wantTag) {
+            if (!tag) {
+              tag = document.createElement('span');
+              tag.className = 'dpc-nameTag';
+              tag.setAttribute('aria-hidden', 'true');
+              button.appendChild(tag);
+            }
+            if (tag.textContent !== tagText) tag.textContent = tagText;
+          } else if (tag) {
+            tag.remove();
+          }
+        } catch {
+          /* a host build with another row shape: leave that row alone */
+        }
+      }
+    };
+
     const apply = () => {
       if (destroyed) return;
       const plan = readPlan();
@@ -1623,10 +1837,21 @@ function build(require) {
       const folded = folding ? new Set(plan.prefs.collapsed || []) : new Set();
       diag.folded = Array.from(folded).join(',');
 
+      // Renames are display state, like the height cap: apply them before the
+      // signature shortcut so a pass that only renames still reaches the DOM.
+      const buttons = Array.from(list.querySelectorAll(':scope > button'));
+      const map = mapButtons(plan.entries, buttons);
+      applyNames(map, plan, wide);
+      // Package names label renamed rows; the first pass that knows the entries
+      // asks the Host once, and later passes are deduplicated by the id set.
+      void ensurePackages();
+
       const nextSignature = JSON.stringify({
         blocks: plan.blocks,
         hidden: plan.hidden ? Array.from(plan.hidden).sort() : [],
         entries: plan.entries.map((entry) => entry.id + ':' + entry.label),
+        names: plan.prefs.names || {},
+        tags: plan.prefs.tags !== false,
         wide,
         folded: Array.from(folded),
       });
@@ -1640,10 +1865,8 @@ function build(require) {
 
       pause();
       try {
-        const buttons = Array.from(list.querySelectorAll(':scope > button'));
         for (const node of Array.from(list.querySelectorAll('[data-dpc-sep]'))) node.remove();
 
-        const map = mapButtons(plan.entries, buttons);
         const managed = new Set(map.values());
 
         // Anything we do not manage (the "More" launcher and its wrapper) keeps
@@ -1781,6 +2004,18 @@ function build(require) {
           node.style.removeProperty('display');
         }
       }
+      // Hand the host rows back exactly as they were: the original label, the
+      // original title text, and no tag of ours.
+      for (const button of Array.from(document.querySelectorAll('button[data-dpc-label]'))) {
+        const label = button.getAttribute('data-dpc-label');
+        if (label) {
+          button.setAttribute('aria-label', label);
+          const title = titleSpanOf(button);
+          if (title) title.textContent = label;
+          button.removeAttribute('data-dpc-label');
+        }
+        for (const tag of Array.from(button.querySelectorAll('.dpc-nameTag'))) tag.remove();
+      }
       for (const node of Array.from(document.querySelectorAll('[data-dpc-list]'))) {
         node.removeAttribute('data-dpc-list');
         node.removeAttribute('data-dpc-unbounded');
@@ -1868,7 +2103,9 @@ function build(require) {
   }
 
   function sortByName() {
-    const labelOf = new Map((store.state.entries || []).map((entry) => [entry.id, entry.label]));
+    const prefs = prefsNow();
+    const entries = store.state.entries || [];
+    const labelOf = new Map(entries.map((entry) => [entry.id, displayName(prefs, entry.id, entry.label)]));
     const locale = activeLang() === 'zh' ? 'zh-Hans-CN' : 'en';
     const order = orderNow()
       .slice()
@@ -2113,6 +2350,7 @@ function build(require) {
     plus: 'M12 6v12M6 12h12',
     eye: 'M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z',
     eyeOff: 'M2.5 12S6 6.5 12 6.5c1.6 0 3 .45 4.2 1.1M21.5 12S18 17.5 12 17.5c-1.6 0-3-.45-4.2-1.1M4 4l16 16',
+    edit: 'M4 20h4l10.5-10.5a2.12 2.12 0 0 0-3-3L5 17v3Z',
     back: 'M14.5 6.5 9 12l5.5 5.5',
   };
 
@@ -2373,6 +2611,9 @@ function build(require) {
     // check runs again on focus, and the answer must not pop back up.
     const [, forceRender] = React.useReducer((n) => n + 1, 0);
     const [groupDrag, setGroupDrag] = React.useState({ from: null, over: null });
+    const [editing, setEditing] = React.useState(null);
+    const [draft, setDraft] = React.useState('');
+    const cancelRenameRef = React.useRef(false);
     /**
      * Dragging works the same for a row and for a section: the handle starts it,
      * the target highlights, dropping commits "move before this one". Only the
@@ -2436,11 +2677,43 @@ function build(require) {
     }, [prefs.auto, prefs.autoFiled, entries.length, state.autoState && state.autoState.status]);
 
     const order = normalize(prefs, entries);
-    const labelOf = new Map(entries.map((entry) => [entry.id, entry.label]));
+    const rawOf = new Map(entries.map((entry) => [entry.id, entry.label]));
+    const labelOf = new Map(entries.map((entry) => [entry.id, displayName(prefs, entry.id, entry.label)]));
     const hidden = new Set(prefs.hidden || []);
     const groupsOf = prefs.groups || [];
     const autoOn = prefs.auto === true;
     const autoState = state.autoState || { status: 'idle', message: '', groups: 0 };
+
+    const startRename = (id) => {
+      cancelRenameRef.current = false;
+      setEditing(id);
+      setDraft(customName(prefsNow(), id));
+    };
+
+    const finishRename = (id) => {
+      // Escape unmounts the input; a trailing blur must not save the draft.
+      if (cancelRenameRef.current) {
+        cancelRenameRef.current = false;
+        setEditing(null);
+        setDraft('');
+        return;
+      }
+      const original = rawOf.get(id) || id;
+      const name = cleanName(draft);
+      const names = { ...(prefsNow().names || {}) };
+      if (!name || name === original) delete names[id];
+      else names[id] = name;
+      setEditing(null);
+      setDraft('');
+      commit({ ...prefsNow(), names });
+    };
+
+    const cancelRename = () => {
+      cancelRenameRef.current = true;
+      setEditing(null);
+      setDraft('');
+    };
+
 
     const head = h(
       'header',
@@ -2599,6 +2872,7 @@ function build(require) {
 
     const rows = order.map((id, position) => {
       const label = labelOf.get(id) || id;
+      const rawLabel = rawOf.get(id) || id;
       const isHidden = hidden.has(id);
       const locked = id === PANEL_KEY;
       return h(
@@ -2616,8 +2890,32 @@ function build(require) {
         h(
           'span',
           { className: 'dpc-rowText' },
-          h('span', { className: 'dpc-name', title: label }, label),
-          h('code', { className: 'dpc-key', title: id }, id),
+          editing === id
+            ? h('input', {
+                className: 'dpc-input dpc-nameInput',
+                // autoFocus is enough: opening the editor is an explicit click.
+                autoFocus: true,
+                value: draft,
+                placeholder: rawLabel,
+                'aria-label': t('renameIt'),
+                onChange: (event) => setDraft(event.target.value),
+                onKeyDown: (event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    finishRename(id);
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    cancelRename();
+                  }
+                },
+                onBlur: () => finishRename(id),
+              })
+            : h(
+                'span',
+                { className: 'dpc-name', title: label === rawLabel ? rawLabel : label + ' · ' + rawLabel },
+                label,
+              ),
+          editing === id ? null : h('code', { className: 'dpc-key', title: id }, id),
         ),
         h(
           'span',
@@ -2635,6 +2933,9 @@ function build(require) {
               ungrouped: t('ungrouped'),
               onPick: (next) => setGroup(id, next),
             }),
+        iconButton('edit', t('renameIt'), () => startRename(id), false, {
+          'aria-pressed': editing === id ? 'true' : 'false',
+        }),
         iconButton(
           isHidden ? 'eyeOff' : 'eye',
           locked ? t('lockedHint') : isHidden ? t('showIt') : t('hideIt'),
@@ -2676,6 +2977,7 @@ function build(require) {
     const layoutOn = prefs.guard !== false;
     const foldingOn = prefs.collapse !== false;
     const bridgeOn = prefs.bridge !== false;
+    const tagsOn = prefs.tags !== false;
     const capNow = typeof prefs.panelMax === 'number' ? prefs.panelMax : 45;
     const setLayout = (patch) => commit({ ...prefsNow(), ...patch });
     const layoutSwitch = (on, label, onClick) =>
@@ -2725,6 +3027,11 @@ function build(require) {
         t('layoutBridge'),
         t('layoutBridgeHint'),
         layoutSwitch(bridgeOn, t('layoutBridge'), () => setLayout({ bridge: !bridgeOn })),
+      ),
+      layoutRow(
+        t('layoutTags'),
+        t('layoutTagsHint'),
+        layoutSwitch(tagsOn, t('layoutTags'), () => setLayout({ tags: !tagsOn })),
       ),
       layoutRow(
         t('layoutMax'),
@@ -2928,6 +3235,7 @@ function build(require) {
     .dpc-glyph:empty::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.4}
     .dpc-rowText{display:flex;flex:1 1 auto;flex-direction:row;align-items:baseline;gap:8px;min-width:0}
     .dpc-name{font-size:13px;font-weight:500;line-height:18px;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dpc-nameInput{flex:1 1 120px;max-width:320px;font-size:13px;line-height:18px}
     .dpc-key{font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:16px;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.7));overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dpc-tags{display:flex;flex:none;align-items:center;gap:8px}
     .dpc-tag{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));white-space:nowrap}
@@ -2942,7 +3250,9 @@ function build(require) {
     .dpc-pickerText{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .dpc-caret{flex:none;width:6px;height:6px;margin-top:-2px;border-right:1.2px solid currentColor;border-bottom:1.2px solid currentColor;transform:rotate(45deg);opacity:.7;transition:transform 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-picker[data-open="true"] .dpc-caret{margin-top:2px;transform:rotate(225deg)}
-    .dpc-menu{position:absolute;z-index:50;top:calc(100% + 4px);right:0;display:flex;flex-direction:column;gap:2px;min-width:144px;max-width:240px;padding:4px;background:var(--dsw-alias-bg-elevated,rgba(127,127,127,.18));border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-md,8px);box-shadow:0 8px 24px rgba(0,0,0,.28)}
+    /* Opaque popover surface: --dsw-alias-bg-layer-2 is the host's own elevated
+       layer, so the menu never lets the card behind it show through. */
+    .dpc-menu{position:absolute;z-index:50;top:calc(100% + 4px);right:0;display:flex;flex-direction:column;gap:2px;min-width:144px;max-width:240px;padding:4px;background-color:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#1f1f1f));border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-md,8px);box-shadow:0 8px 24px rgba(0,0,0,.28)}
     .dpc-option{appearance:none;border:0;padding:4px 8px;border-radius:var(--dsw-radius-xs,4px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .dpc-option:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));color:var(--dsw-alias-label-primary,#8a8a8a)}
     .dpc-option[aria-selected="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 16%,transparent);color:var(--dsw-alias-label-primary-bluish,#7f8fd8)}
@@ -3044,6 +3354,10 @@ function build(require) {
     [data-dpc-list][data-dpc-unbounded]{max-height:none}
     [data-dpc-list]>button{flex:none}
     [data-dpc-region]{flex:1 1 auto;min-height:min(120px,18vh)}
+
+    /* The original name of a renamed row. It sits after the host title, pushed
+       to the far right; the host row stays a single click target. */
+    .dpc-nameTag{display:inline-block;flex:none;margin-left:auto;max-width:50%;height:16px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-l2,rgba(127,127,127,.14));color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));font-size:10px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
 
     .dpc-sep{display:flex;align-items:center;gap:6px;flex:none;padding:12px 8px 4px;font-size:11px;font-weight:500;line-height:14px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.78));white-space:nowrap;overflow:hidden;cursor:pointer;border-radius:var(--dsw-radius-sm,6px);user-select:none}
     .dpc-sep:hover{color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95))}
@@ -3244,6 +3558,9 @@ function build(require) {
       }
       ctx.effect(() => () => disposeBridges(), `${PACKAGE}: bridge cleanup`);
       kickBridge();
+      // Renames show the owning package; the first scan answers the current rows,
+      // later bridge scans refresh the set when more settings pages register.
+      void ensurePackages();
     try { window.__dpcApplied = true; } catch { /* ignore */ }
   }
 
