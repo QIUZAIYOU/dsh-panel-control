@@ -17,20 +17,21 @@
 `sidebar.panellist` 条目只有 `id/order/label/registrant`，没有包名字段；`registrant` 是 Cordis fiber 名，运行时大多数插件共享同一个 fiber，无法拿去区分插件。包名只存在于宿主自己的模块图里，所以：
 
 1. 客户端把当前面板 id 与桥接设置页 id 发给 Host 的 `packages` RPC；
-2. Host 用 `clientModules.graph().entries` 拿到模块 id（即包名）与 `clientModules.clientPath(id)` 返回的 bundle 路径；
+2. Host 用 `clientModules.graph().entries` 拿到模块 id 与 `clientModules.clientPath(id)` 返回的 bundle 路径；模块 id 不一定是包名（例如 `dsh-enhance-ui` 是 `@wufeng0105/dsh-enhance` 的 UI 子包）；
 3. 逐个 bundle 查找槽字面量 `sidebar.panellist` / `settings.section`，并优先接受紧邻 `id:` / `key:`（或赋值）的该 id；没有注册字段时只接受距离 400 字符以内的提及，避免把注释里顺带提到的通用词当成归属；
-4. 命中的模块 id 就是包名，按模块图 revision 缓存。
+4. 命中的模块再按路径归位到 `node_modules` 下最近的安装包目录，读该目录 `package.json` 的 `name`；子目录里的 `ui/package.json` 不会覆盖根包名。结果按模块图 revision 缓存。
 
 标签文本会去掉 scope 与 `dsh-` 前缀，再退掉 `client-ui-`：
 
-| 模块 id | 标签 |
+| 包名 | 标签 |
 | --- | --- |
 | `dsh-panel-control` | `panel-control` |
 | `@furongjun1999/dsh-memory` | `memory` |
 | `dshmarket` | `market` |
 | `@deepseek-ai/dsh-client-ui-plugin-manager` | `plugin-manager` |
+| `@wufeng0105/dsh-enhance`（模块 id `dsh-enhance-ui`） | `enhance` |
 
-Host 尚未返回或确实找不到时，回退到入口 id 本身（同样去 `dsh-` 前缀），所以标签绝不会空白。
+Host 尚未返回或确实找不到包名时，这一行不显示标签——入口 id 不是包名，宁可空白也不要第二种写法。
 
 ## 映射回原条目
 
@@ -65,10 +66,10 @@ Host 尚未返回或确实找不到时，回退到入口 id 本身（同样去 `
 ## 边界
 
 - 只覆盖显示，不改变插件加载、入口 id 或插件自己的配置；停用本插件后宿主标题原样恢复。
-- 包名识别依赖 Host 的模块图接口与 bundle 内容。接口不存在、模块读不到或代码里没有可识别的注册字面量时，标签退化为入口 id；不会影响改名本身。
+- 包名识别依赖 Host 的模块图接口与 bundle 内容。接口不存在、模块读不到或代码里没有可识别的注册字面量时，该行不显示标签；不会影响改名本身。
 - 宿主大改版若移除 `span.panelTitle` 或改写按钮结构，重命名会退化为只改 `aria-label`；找不到对应行时该行保持原样，不会报错。
 - 标签 `pointer-events: none`，不参与点击与拖拽；分组下拉菜单铺了不透明底色，避免透出下面的行。
 
 ## 验证
 
-`scripts/names-smoke.mjs` 用迷你 DOM 驱动真实引擎，覆盖改名、关标签、清空恢复、窄侧栏、重复名称映射、包名标签、未知包回退与 `dispose` 还原；`npm run check` 会运行它。
+`scripts/names-smoke.mjs` 用迷你 DOM 驱动真实引擎，覆盖改名、关标签、清空恢复、窄侧栏、重复名称映射、包名标签、未知包不显示标签与 `dispose` 还原；`npm run check` 会运行它。

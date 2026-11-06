@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.9.1';
+  const BUILD_STAMP = 'dsh-panel-control/0.9.2';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -1038,8 +1038,10 @@ function build(require) {
   };
 
   function packageTagFor(id) {
-    const pkg = packageState.map[id];
-    return packageLabel(pkg) || packageLabel(id);
+    // No fallback to the row id: a bridge row's id is `dpc-bridge-*` and an
+    // unresolved panel id is not a package name. An empty tag is better than
+    // a second, wrong spelling of the same plugin.
+    return packageLabel(packageState.map[id]);
   }
 
   /**
@@ -2496,7 +2498,15 @@ function build(require) {
               'span',
               { className: 'dpc-bridgeTags' },
               h('span', { className: 'dpc-bridgeTag' }, t('bridgeTag')),
-              h('span', { className: 'dpc-bridgeFrom' }, fill(t('bridgeFrom'), { p: candidate.sectionId })),
+              h(
+                'span',
+                { className: 'dpc-bridgeFrom' },
+                fill(t('bridgeFrom'), {
+                  // The same package short name the row tag shows; the section
+                  // id is only a fallback while the Host lookup is in flight.
+                  p: packageTagFor(candidate.bridgeId) || candidate.sectionId,
+                }),
+              ),
             ),
           ),
           node

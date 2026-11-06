@@ -389,9 +389,9 @@ check(dupButtons[0].getAttribute('aria-label') === '甲', 'the first duplicate-l
 check(dupButtons[1].getAttribute('aria-label') === '相同', 'the second duplicate-label row was renamed by mistake');
 check(tagOf(dupButtons[0]).textContent === 'dup-a', 'the duplicate row tag did not use its package');
 
-// 5b. An id the Host cannot map falls back to the id itself, with `dsh-` gone.
+// 5b. An id the Host cannot map has no tag: the row id is not a package name.
 const unmapped = await run({ version: 2, names: { 'workspace-control': '工作区' }, tags: true });
-check(tagOf(unmapped.buttons[2]).textContent === 'workspace-control', 'an unmapped package did not fall back to its id');
+check(!tagOf(unmapped.buttons[2]), 'an unmapped package fell back to its row id');
 
 // 6. Dispose restores the host DOM.
 const disposed = await run({ version: 2, names: { plugins: '我的插件' }, tags: true });

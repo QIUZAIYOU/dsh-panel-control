@@ -602,6 +602,42 @@ async function readModuleText(modules, id, texts) {
   return text;
 }
 
+/**
+ * The installed package that owns a served module.
+ *
+ * A client entry id is not a package name: `dsh-enhance-ui` is the UI
+ * subpackage of `@wufeng0105/dsh-enhance`, and the plugin manager labels the
+ * whole plugin with the latter. The package directory is the one directly
+ * under the last `node_modules` segment; its package.json `name` is what the
+ * plugin manager shows, scoped and `dsh-`-stripped by the Client.
+ */
+function installedPackageDir(file) {
+  const parts = String(file).split(/[\\/]/);
+  const at = parts.lastIndexOf('node_modules');
+  if (at === -1) return path.dirname(file);
+  const rest = parts.slice(at + 1);
+  const pkg = rest[0] && rest[0].startsWith('@') && rest[1] ? [rest[0], rest[1]] : [rest[0]];
+  if (!pkg[0]) return path.dirname(file);
+  return path.join(parts.slice(0, at + 1).join(path.sep), ...pkg);
+}
+
+async function packageNameOf(modules, moduleId, names) {
+  if (names.has(moduleId)) return names.get(moduleId);
+  let name = moduleId;
+  try {
+    const file = modules.clientPath(moduleId);
+    if (file) {
+      const manifest = path.join(installedPackageDir(file), 'package.json');
+      const parsed = JSON.parse(await fs.readFile(manifest, 'utf8'));
+      if (parsed && typeof parsed.name === 'string' && parsed.name.trim()) name = parsed.name.trim();
+    }
+  } catch {
+    name = moduleId;
+  }
+  names.set(moduleId, name);
+  return name;
+}
+
 async function packageMap(scope, payload) {
   const modules = clientModules || serviceOf(scope, 'clientModules');
   if (!modules || typeof modules.graph !== 'function' || typeof modules.clientPath !== 'function') {
@@ -630,6 +666,7 @@ async function packageMap(scope, payload) {
   const packages = {};
   const best = new Map();
   const texts = new Map();
+  const names = new Map();
   for (const entry of graph.entries) {
     const moduleId = entry && typeof entry.id === 'string' ? entry.id : '';
     if (!moduleId) continue;
@@ -650,7 +687,7 @@ async function packageMap(scope, payload) {
       best.set(want.id, { moduleId, strong: match.strong, distance: match.distance });
     }
   }
-  for (const [id, match] of best) packages[id] = match.moduleId;
+  for (const [id, match] of best) packages[id] = await packageNameOf(modules, match.moduleId, names);
   const value = { packages, rev: typeof graph.rev === 'string' ? graph.rev : null };
   packageCache.set(key, value);
   while (packageCache.size > PACKAGE_CACHE_KEPT) packageCache.delete(packageCache.keys().next().value);

@@ -44,8 +44,8 @@
 `props.renderSlot(slotName, { close: back }, {})` 渲染它。
 
 这样 section 的 `inject`、`store`、locale `t`、`useStore` 和 error boundary 仍由宿主照常提供；直接调用
-section 组件会缺这些。面板只负责外壳：顶部一条 40px 的栏（「返回对话」+ 来源 section id），
-下面一块随页面滚动的主体。`close` 与设置壳里一样只做「关掉这一页」，这里落回对话
+section 组件会缺这些。面板只负责外壳：顶部一条 40px 的栏（「返回对话」+ 来源包名短名，
+查不到包名时退回 section id），下面一块随页面滚动的主体。`close` 与设置壳里一样只做「关掉这一页」，这里落回对话
 （`layout.selectPanel(null)`）。
 
 桥接面板不常驻：开关关闭、section 消失、插件卸载时，`dispose()` 成对撤掉 `main` 与

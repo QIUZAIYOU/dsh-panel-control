@@ -71,6 +71,20 @@ const pkgPaths = {
   'billion-context': await pkgFile('bili.js', "register({ name: 'settings.section', id: 'bili' });\n"),
 };
 
+// A module id can differ from the installed package: the UI entry of an
+// enhance-style plugin is `dsh-widget-ui`, while the plugin manager labels the
+// plugin with the root package `@acme/dsh-widget`. The nested `ui/package.json`
+// must not win over the package directory.
+const widgetDir = path.join(PKG_DIR, 'node_modules', '@acme', 'dsh-widget');
+await fs.mkdir(path.join(widgetDir, 'ui'), { recursive: true });
+await fs.writeFile(path.join(widgetDir, 'package.json'), JSON.stringify({ name: '@acme/dsh-widget' }));
+await fs.writeFile(path.join(widgetDir, 'ui', 'package.json'), JSON.stringify({ name: 'dsh-widget-ui' }));
+await fs.writeFile(
+  path.join(widgetDir, 'ui', 'client.js'),
+  "register({ name: 'settings.section', id: 'widget' });\n",
+);
+pkgPaths['@acme/dsh-widget-ui'] = path.join(widgetDir, 'ui', 'client.js');
+
 const clientModulesStub = {
   served: [],
   clientPath: (id) => pkgPaths[id] || null,
@@ -83,6 +97,7 @@ const clientModulesStub = {
       { id: 'dsh-panel-control', rev: 'rev-now', url: 'plugins/??dsh-panel-control/client.js&rev=rev-now' },
       { id: 'dshmarket', rev: 'rev-now', url: 'plugins/??dshmarket/client.js&rev=rev-now' },
       { id: 'billion-context', rev: 'rev-now', url: 'plugins/??billion-context/client.js&rev=rev-now' },
+      { id: '@acme/dsh-widget-ui', rev: 'rev-now', url: 'plugins/??@acme/dsh-widget-ui/client.js&rev=rev-now' },
       // The plugin that sits next to this one in the real profile: it carries no
       // fallback of its own, so a retired revision used to drop it silently
       // while the manager still reported it running.
@@ -265,7 +280,8 @@ if (route) {
     check(
       'inventory ids',
       Array.isArray(body.result.value.ids) &&
-        body.result.value.ids.join() === 'a,b,dsh-panel-control,dshmarket,billion-context,dsh-workspace-control',
+        body.result.value.ids.join() ===
+        'a,b,dsh-panel-control,dshmarket,billion-context,@acme/dsh-widget-ui,dsh-workspace-control',
       body.result.value && body.result.value.ids.join(),
     );
     const pkgResponse = await route.fetch(
@@ -275,6 +291,7 @@ if (route) {
             { id: 'panel-control', slot: 'sidebar.panellist' },
             { id: 'dsh-market', slot: 'sidebar.panellist' },
             { id: 'bili', slot: 'settings.section' },
+            { id: 'widget', slot: 'settings.section' },
             { id: 'nobody', slot: 'sidebar.panellist' },
           ],
         }),
@@ -285,6 +302,11 @@ if (route) {
     check('packages maps panel id', packages['panel-control'] === 'dsh-panel-control', JSON.stringify(packages));
     check('packages maps market id', packages['dsh-market'] === 'dshmarket', JSON.stringify(packages));
     check('packages maps settings id', packages.bili === 'billion-context', JSON.stringify(packages));
+    check(
+      'packages resolves the installed package, not the module id',
+      packages.widget === '@acme/dsh-widget',
+      JSON.stringify(packages),
+    );
     check('packages leaves unknown ids unmapped', !packages.nobody, JSON.stringify(packages));
   } catch (error) {
     check('inventory answers', false, error.message);

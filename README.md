@@ -26,7 +26,7 @@
 
 补出来的设置页入口也出现在同一个侧栏列表里，排在普通入口之后、本插件自己之前；标题沿用设置页自己的名称，重复时附带设置页 id 以区分。
 
-改过名的入口仍把原来的注册名留在按钮属性里，引擎靠它把自己映射回同一条注册，所以宿主的排序、重渲染和后续重扫都不受影响；行尾标签显示的是插件包名（由 Host 的模块图解析，`dsh-` 前缀已省略），屏幕阅读器与工具提示读到的则是你设定的显示名。
+改过名的入口仍把原来的注册名留在按钮属性里，引擎靠它把自己映射回同一条注册，所以宿主的排序、重渲染和后续重扫都不受影响；行尾标签显示的是插件包名（由 Host 从安装目录的 `package.json` 解析，`dsh-` 前缀已省略），屏幕阅读器与工具提示读到的则是你设定的显示名。
 
 ## 安装
 
@@ -36,7 +36,7 @@
 
 ```bash
 cd C:/Users/<you>/.dsh/profiles/desktop
-npm install dsh-panel-control@0.9.1
+npm install dsh-panel-control@0.9.2
 ```
 
 把包名加进同一目录 `package.json` 的 `dsh.profile.bundles`：
@@ -101,7 +101,7 @@ npm run doctor    # 体检 profile 安装状态
 - `scripts/host-smoke.mjs`：驱动宿主侧路由，覆盖设置读写、分类请求与 bundle 兜底。
 - `scripts/layout-smoke.mjs`：断言侧栏布局的 CSS 钩子与关键数值，并校验 `BUILD_STAMP` 与版本号一致。
 - `scripts/bridge-smoke.mjs`：在假 ctx 上跑 `client.js`，断言只给「有设置页、没有侧栏入口」的第三方插件补行，且成对注册 main、开关关闭后整体撤回、桥接页经自有子槽交给宿主渲染并能返回对话。
-- `scripts/names-smoke.mjs`：用迷你 DOM 驱动真实引擎，断言改名覆盖宿主标题与 `aria-label`、包名标签的位置与开关、清空恢复、窄侧栏不出标签、重复名称仍能按位置映射、未知包回退到入口 id，以及 `dispose` 后 DOM 原样归还。
+- `scripts/names-smoke.mjs`：用迷你 DOM 驱动真实引擎，断言改名覆盖宿主标题与 `aria-label`、包名标签的位置与开关、清空恢复、窄侧栏不出标签、重复名称仍能按位置映射、未知包不显示标签，以及 `dispose` 后 DOM 原样归还。
 
 进一步材料：[docs/sidebar-layout.md](docs/sidebar-layout.md)（布局与折叠实现）、[docs/renaming-panels.md](docs/renaming-panels.md)（重命名与包名标签）、[docs/bridged-settings-pages.md](docs/bridged-settings-pages.md)（设置页补入口的识别与渲染）、[docs/ui-design-notes.md](docs/ui-design-notes.md)（界面规范与踩坑）、[docs/discussion-bundle-evaluated-twice.md](docs/discussion-bundle-evaluated-twice.md)（bundle 被求值两次的事故复盘）。
 
@@ -110,7 +110,7 @@ npm run doctor    # 体检 profile 安装状态
 - 自动分类会把入口名称发给当前 profile 配置的模型服务商；不想要就关掉开关，分组仍可手动编辑。
 - 分类结果只是建议，可以整体重排或改名。
 - 依赖宿主侧栏的 DOM 结构（`[class*="panelList"]` 与面板按钮的 `aria-label`），官方大改版时需要跟进。
-- 重命名只覆盖侧栏的显示层：宿主标题文本、`aria-label` 与包名标签都是本插件写的，插件自己的配置和入口 id 不变；宿主重渲染后由下一次扫描补回。图标条模式没有标题文本，只改可访问名称，也不显示包名标签。包名由 Host 模块图解析，接口不可用时标签回退为入口 id。
+- 重命名只覆盖侧栏的显示层：宿主标题文本、`aria-label` 与包名标签都是本插件写的，插件自己的配置和入口 id 不变；宿主重渲染后由下一次扫描补回。图标条模式没有标题文本，只改可访问名称，也不显示包名标签。包名由 Host 从模块所在安装目录的 `package.json` 解析（模块 id 不等于包名，例如 `dsh-enhance-ui` → `@wufeng0105/dsh-enhance`），接口不可用或解析不到时该行不显示标签。
 - 只写 `style.order`、`style.display` 与 `data-dpc-*` 属性，不移动 React 节点，不改宿主代码。
 - 排序、隐藏、分组都只影响本机这份安装。
 - 设置页入口按「section id / label 是否已被某个面板占用」识别归属，不依赖插件声明的注册者（client runner 会把多个插件报成同一个名字）；代价是启发式：与面板同名的第三方设置页会被视为已有入口，新增内置设置页需要更新 `CORE_SECTION_IDS`。第三方设置页按宿主渲染器原位渲染，若它自己依赖设置弹窗的私有上下文，可能出现布局差异。
