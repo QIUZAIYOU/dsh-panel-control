@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.9.2';
+  const BUILD_STAMP = 'dsh-panel-control/0.9.3';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -1115,14 +1115,21 @@ function build(require) {
       return raw
         .map((entry) => {
           const options = (entry && entry.options) || {};
+          // The host keeps the registration face on the entry itself: `inject`,
+          // `store`, `locale` and `children` sit next to `options`, not inside it.
+          // Reading them from `options` silently yields undefined, and the
+          // re-registered section then renders without its translations, store
+          // or locale — which is exactly how a bridged page ends up looking
+          // different (and poorer) than the same page inside DSH's settings.
           return {
             id: typeof options.id === 'string' ? options.id : '',
             label: options.label,
             registrant: registrantOf(entry),
             component: entry && entry.component,
-            inject: options.inject,
-            store: options.store,
-            locale: options.locale,
+            inject: entry && entry.inject,
+            store: entry && entry.store,
+            locale: entry && entry.locale,
+            children: entry && entry.children,
           };
         })
         .filter((section) => section.id !== '');
@@ -1178,6 +1185,11 @@ function build(require) {
       const label = resolveLabel(section.label, section.id);
       if (panelLabels.has(label)) continue;
       if (typeof section.component !== 'function') continue;
+      // Child slots are declared once, globally, by the entry that owns them.
+      // Re-declaring the same names under our bridge would throw, and rendering
+      // the component without its props face would drop whatever it nests.
+      // Such a section keeps its native settings page and gets no bridge row.
+      if (section.children && Object.keys(section.children).length > 0) continue;
       const bridgeId = BRIDGE_PREFIX + section.id;
       if (bridgeId.length > LIMITS.key || taken.has(bridgeId)) continue;
       taken.add(bridgeId);
@@ -1314,6 +1326,16 @@ function build(require) {
           enabled,
           scans: bridgeState.scans,
           sections: sections.map((section) => `${section.id}:${section.registrant || '?'}`).join('|'),
+          // Whether the entry carried its registration face: i=inject, l=locale,
+          // s=store. A bridged page missing these is the "different page" bug.
+          wiring: candidates
+            .map(
+              (candidate) =>
+                `${candidate.sectionId}:${typeof candidate.inject === 'function' ? 'i' : '-'}${
+                  candidate.locale ? 'l' : '-'
+                }${candidate.store ? 's' : '-'}`,
+            )
+            .join('|'),
           panels: panelIds.join('|'),
           ids: Array.from(bridgeState.entries.keys()).join(','),
         });

@@ -36,7 +36,7 @@
 
 ```bash
 cd C:/Users/<you>/.dsh/profiles/desktop
-npm install dsh-panel-control@0.9.2
+npm install dsh-panel-control@0.9.3
 ```
 
 把包名加进同一目录 `package.json` 的 `dsh.profile.bundles`：
@@ -86,6 +86,7 @@ cmd //c mklink /J node_modules\dsh-panel-control D:\Github\dsh-panel-control
 
 - **侧栏没有「面板管理」**：先重载一次页面。仍没有，看 `~/.dsh/panel-control/host.log` 与 `client.log`。
 - **设置页入口没补出来**：`host.log` 里先搜 `bridge-scan`，启动后的前几次扫描会列出当时可见的设置页（`id:registrant`）和侧栏条目；再搜 `kind=bridge` 看最终补出的 id。目标插件出现在 `sections` 里但 `ids` 没它，说明它的 section id 或 label 与某个已有面板重合，被归属规则当成了已有入口；始终不出现，是它的设置页注册得比扫描更晚（见 `docs/bridged-settings-pages.md`）。
+- **补出的设置页和设置弹窗里不一样（英文、缺控件）**：先看同一条 `bridge-scan` 的 `wiring` 字段，`i/l/s` 分别表示该 section 的 inject / locale / store 是否带到了桥接条目上；三个都缺多半是宿主条目结构变了（注册面在条目顶层，不在 `options` 里）。若 `wiring` 齐全但页面仍不同，则是该设置页依赖设置弹窗的私有上下文，属于边界情况。
 - **插件管理显示运行，界面却没变化**：页面多半还在用旧的 bundle revision（刚改过 `client.js` 时常见），重载一次即可。
 - **改了代码没反应**：确认 `BUILD_STAMP` 与 `package.json` 的版本一致，并跑一遍 `npm run check`。
 

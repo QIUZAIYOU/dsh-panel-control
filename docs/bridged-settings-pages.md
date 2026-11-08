@@ -43,6 +43,11 @@
 因此桥接条目把原 section 的组件以同一份 `inject/store/locale` 重新注册进自有子槽，再通过宿主注入的
 `props.renderSlot(slotName, { close: back }, {})` 渲染它。
 
+注意这三个字段在宿主 `StoredEntry` 上是**顶层字段**，不在 `options` 里（`options` 只有
+`id/order/label/priority`）。从 `options` 读会安静地拿到 `undefined`，页面于是没有译文、没有 store，
+看起来就像「英文且功能不全」——这是 0.9.3 修掉的真实故障。section 若自己声明了 `children`，它的子槽名
+已被原条目全局占用，桥接再声明会抛错，因此这类 section 不补行，继续走宿主的设置页。
+
 这样 section 的 `inject`、`store`、locale `t`、`useStore` 和 error boundary 仍由宿主照常提供；直接调用
 section 组件会缺这些。面板只负责外壳：顶部一条 40px 的栏（「返回对话」+ 来源包名短名，
 查不到包名时退回 section id），下面一块随页面滚动的主体。`close` 与设置壳里一样只做「关掉这一页」，这里落回对话
@@ -69,7 +74,8 @@ section 组件会缺这些。面板只负责外壳：顶部一条 40px 的栏（
 - `npm run check`：`layout-smoke` 断言桥接的常量、持久化字段与自有子槽渲染没有被改掉；
   `bridge-smoke` 在假 `ctx` 上验证识别、成对注册、开关撤回与返回对话。
 - 刷新插件后看 `~/.dsh/panel-control/host.log`：`bridge-scan` 行记录每次扫描看到的 section 与
-  侧栏条目（`id:registrant`），`kind=bridge` 行记录最终补出的 id。目标 section 在 `sections`
+  侧栏条目（`id:registrant`），`wiring` 字段按 `i/l/s` 标记该 section 的 inject/locale/store 是否
+  被带到桥接条目上；`kind=bridge` 行记录最终补出的 id。目标 section 在 `sections`
   里却没进 `ids`，说明它被归属规则当成了已有入口（或 id 不在内置列表里而被排除）；一直不在
   `sections` 里，是注册时序问题。
 - `bridge-smoke` 里另有一条晚注册用例：先启动、后注册 section，订阅必须把新行补出来。

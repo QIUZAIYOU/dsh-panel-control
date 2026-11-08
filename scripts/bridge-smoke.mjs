@@ -90,8 +90,10 @@ function makeWindow(localPrefs) {
   };
 }
 
-function section(options, registrant) {
-  return { options, component: () => null, registrant };
+function section(options, registrant, extra) {
+  // Mirrors the host's StoredEntry: `inject`, `store`, `locale` and `children`
+  // live beside `options`, not inside it.
+  return { options, component: () => null, registrant, ...(extra || {}) };
 }
 function panelEntry(options, registrant) {
   return { options, component: () => null, registrant };
@@ -177,10 +179,22 @@ function makeCtx(seedSections = true) {
   );
   if (seedSections) {
     list('settings.section').push(
-      section({ name: 'settings.section', id: 'plan-mode', order: 5, label: '计划模式' }, 'tk'),
+      section({ name: 'settings.section', id: 'plan-mode', order: 5, label: '计划模式' }, 'tk', {
+        inject: () => ({ t: (key) => key }),
+        locale: 'dsh-flash-presets',
+      }),
     );
     list('settings.section').push(
-      section({ name: 'settings.section', id: 'bili', order: 100, label: () => '上下文' }, 'tk'),
+      section({ name: 'settings.section', id: 'bili', order: 100, label: () => '上下文' }, 'tk', {
+        inject: () => ({ t: (key) => key }),
+        locale: 'billion-context',
+        store: { actions: {} },
+      }),
+    );
+    list('settings.section').push(
+      section({ name: 'settings.section', id: 'with-children', order: 110, label: '带子槽的设置页' }, 'tk', {
+        children: { 'with-children-slot': { kind: 'single', scope: 'root' } },
+      }),
     );
     list('settings.section').push(
       section({ name: 'settings.section', id: 'workspace-control-settings', order: 30, label: '工作区管理' }, 'tk'),
@@ -278,6 +292,7 @@ check(!on.ids.includes('dpc-bridge-account'), 'bridged a core settings section')
 check(!on.ids.includes('dpc-bridge-models'), 'bridged a core settings section');
 check(!on.ids.includes('dpc-bridge-agent-presets'), 'bridged a core settings section');
 check(!on.ids.includes('dpc-bridge-workspace-control-settings'), 'bridged a plugin whose panel id is the section base');
+check(!on.ids.includes('dpc-bridge-with-children'), 'bridged a section that declares its own child slots');
 check(on.mains.includes('dpc-bridge-plan-mode') && on.mains.includes('dpc-bridge-bili'), 'a bridge row has no main entry');
 const planRow = on.rows.find((row) => row.options.id === 'dpc-bridge-plan-mode');
 check(planRow && planRow.options.order === 85, 'bridge rows lost their order');
@@ -311,6 +326,18 @@ check(Boolean(view) && view.type === 'div', 'the bridge page did not render its 
 const childEntries = on.registries.get(slotName) || [];
 check(childEntries.length === 1, 'the section component was not re-registered into the bridge slot');
 check(childEntries[0] && typeof childEntries[0].component === 'function', 'the bridge slot has no component');
+check(
+  childEntries[0] && typeof childEntries[0].options.inject === 'function',
+  'the bridge slot lost the section inject (translations/store would be missing)',
+);
+check(
+  childEntries[0] && childEntries[0].options.locale === 'billion-context',
+  'the bridge slot lost the section locale namespace',
+);
+check(
+  childEntries[0] && childEntries[0].options.store && childEntries[0].options.store.actions,
+  'the bridge slot lost the section store',
+);
 if (slot) slot.props.close();
 check(calls.selectPanel.includes(null), 'closing the bridge page did not select the Conversation');
 
