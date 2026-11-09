@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.10.1';
+  const BUILD_STAMP = 'dsh-panel-control/0.10.2';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -3495,6 +3495,7 @@ function build(require) {
         { className: inSection ? 'dpc-page dpc-page--flush' : 'dpc-page' },
         head,
         notice,
+        auto,
         order.length === 0
           ? h(
               'section',
@@ -3503,7 +3504,6 @@ function build(require) {
               h('button', { type: 'button', className: 'dpc-link', onClick: resetAll }, t('reset')),
             )
           : tree,
-        auto,
         layout,
         diag,
       ),

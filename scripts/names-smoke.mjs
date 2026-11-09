@@ -483,6 +483,7 @@ try {
   failures.push('the manager failed to render: ' + (error && error.message));
 }
 const classes = [];
+let pageChildren = null;
 const collectClasses = (node) => {
   if (!node || typeof node !== 'object') return;
   if (Array.isArray(node)) {
@@ -490,7 +491,11 @@ const collectClasses = (node) => {
     return;
   }
   const props = node.props || {};
-  if (props.className) classes.push(...String(props.className).split(/\s+/));
+  if (props.className) {
+    const names = String(props.className).split(/\s+/);
+    classes.push(...names);
+    if (names.includes('dpc-page')) pageChildren = props.children;
+  }
   collectClasses(props.children);
 };
 collectClasses(managerTree);
@@ -498,6 +503,20 @@ check(classes.includes('dpc-treeGrid'), 'the manager did not render the tree gri
 check(classes.includes('dpc-pane--plugins'), 'the manager did not render the plugins pane');
 check(classes.includes('dpc-pane--groups'), 'the manager did not render the groups pane');
 check(classes.includes('dpc-treeEmpty'), 'an empty group did not render its drop target');
+const pageKids = Array.isArray(pageChildren) ? pageChildren : pageChildren ? [pageChildren] : [];
+const pageIndexOf = (token) =>
+  pageKids.findIndex(
+    (child) =>
+      child &&
+      child.props &&
+      String(child.props.className || '').split(/\s+/).includes(token),
+  );
+const autoIndex = pageIndexOf('dpc-auto');
+const treeIndex = pageIndexOf('dpc-treeGrid');
+check(
+  autoIndex !== -1 && treeIndex !== -1 && autoIndex < treeIndex,
+  'the auto-classify card did not come before the tree grid',
+);
 
 // 12. Once a group is populated, ungrouped rows are staging-only: hidden in
 //     the sidebar, while the manager keeps a row so it stays reachable.
