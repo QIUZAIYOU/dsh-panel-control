@@ -1,17 +1,19 @@
 {
   "name": "dsh-panel-control",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "type": "module",
   "engines": {
     "dsh": ">=0.2.1-rc.3"
   },
-  "description": "Manage the global panel navigation at the top of the DSH sidebar: reorder, hide and group every entry, with the layout persisted per installation.",
+  "description": "DeepSeek Harness 侧栏面板管理：排序、隐藏、分组、折叠与自动分类。",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
     "sidebar",
-    "panel"
+    "panel",
+    "panel-manager",
+    "sidebar-layout"
   ],
   "exports": {
     ".": "./index.js",

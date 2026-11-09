@@ -4,11 +4,13 @@
 // reachable from a node unit test because client.js only loads inside the page
 // module loader. These assertions keep the pieces the runtime check proved are
 // necessary from silently disappearing in a refactor.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const read = (name) => readFileSync(new URL('../' + name, import.meta.url), 'utf8');
 const client = read('client.js');
 const pkg = JSON.parse(read('package.json'));
+const readme = read('README.md');
+const screenshots = JSON.parse(read('screenshots.json'));
 const problems = [];
 
 const expect = (ok, message) => {
@@ -253,6 +255,30 @@ expect(
   client.indexOf("t('deleteGroup')") >= 0 &&
     client.indexOf("t('deleteGroup')") < client.indexOf("t('showGroup')"),
   'the group eye is not the last action in the row',
+);
+
+const readmeShots = [
+  ...new Set([...readme.matchAll(/assets\/screenshot-[\w-]+\.png/g)].map((match) => match[0])),
+];
+expect(
+  readme.includes('dsh-panel-control@' + pkg.version),
+  'README install version and package.json version disagree',
+);
+expect(readmeShots.length >= 2, 'README no longer references both screenshots');
+for (const shot of readmeShots) {
+  expect(existsSync(new URL('../' + shot, import.meta.url)), 'README references a missing screenshot: ' + shot);
+}
+expect(
+  readme.includes('/v' + pkg.version + '/assets/screenshot-panel.png'),
+  'README screenshots are not pinned to the release tag',
+);
+expect(Array.isArray(screenshots) && screenshots.length >= 2, 'screenshots.json lost its screenshot list');
+for (const shot of screenshots) {
+  expect(existsSync(new URL('../' + shot, import.meta.url)), 'screenshots.json references a missing file: ' + shot);
+}
+expect(
+  String(pkg.description || '').includes('侧栏'),
+  'package.json description is missing the Chinese sidebar summary',
 );
 
 expect(client.includes("const BUILD_STAMP = 'dsh-panel-control/" + pkg.version + "'"), 'BUILD_STAMP and package.json version disagree');

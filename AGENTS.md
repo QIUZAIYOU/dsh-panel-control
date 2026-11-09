@@ -35,3 +35,5 @@
 
 - `BUILD_STAMP` 与 `package.json` 的版本必须一致（`scripts/layout-smoke.mjs` 会检查）。
 - 改完 `client.js` 必跑 `npm run check`；它包含 `--check` 语法、host smoke 和静态布局断言。
+- 发版前同步 README 的功能、安装版本和截图，并把 `package.json.description` 写成中文一句话；
+  截图只放当前版本界面或明确标注的预览，裁掉账号、会话与工作区信息。
