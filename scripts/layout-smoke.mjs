@@ -34,6 +34,12 @@ for (const marker of [
   'data-dpc-label',
   'applyNames',
   'layoutTags',
+  'layoutCounts',
+  'countsOn',
+  'hiddenGroups',
+  'hiddenIdsOf',
+  'toggleGroupHidden',
+  'groupHiddenChip',
 ]) {
   expect(client.includes(marker), 'client.js lost ' + marker);
 }
@@ -53,9 +59,53 @@ expect(/\.dpc-bridgeBar\{[^}]*min-height:40px/.test(client), 'the bridge bar los
 // A renamed row keeps its host label addressable while the visible title changes;
 // the original-name tag is opt-out, and the group menu must not sit on transparency.
 expect(client.includes('out.tags = raw.tags !== false'), 'the original-name tag switch is not persisted');
+expect(client.includes('counts: false'), 'group member counts no longer default to off');
+expect(client.includes('out.counts = raw.counts === true'), 'the group-count switch is not persisted');
+expect(
+  client.includes("t('layoutCounts')") &&
+    client.includes("countsOn ? h('span', { className: 'dpc-count' }, String(members.length)) : null"),
+  'the group count is not behind its master switch',
+);
+expect(
+  client.includes('count: plan.prefs.counts === true ? shown.length : null') &&
+    client.includes('counts: plan.prefs.counts === true') &&
+    client.includes('if (block.count !== null)'),
+  'the sidebar separator count is not behind the same switch',
+);
 expect(/\.dpc-nameTag\{[^}]*pointer-events:none/.test(client), 'the original-name tag can intercept clicks');
 expect(/\.dpc-menu\{[^}]*background-color:var\(--dsw-alias-bg-layer-2/.test(client), 'the group menu lost its opaque base');
 expect(pkg.scripts && String(pkg.scripts.check).includes('names-smoke'), 'npm run check no longer runs the names gate');
+
+// A group switch is a second, independent hidden axis: the engine must union it
+// with the per-row list, and "show all" must clear both.
+expect(
+  client.includes('out.hiddenGroups = uniqueIds(raw.hiddenGroups, LIMITS.groups)'),
+  'the group-hidden list is not sanitized',
+);
+expect(
+  client.includes('commit({ ...prefsNow(), hidden: [], hiddenGroups: [] })'),
+  'show-all no longer clears group-hidden rows',
+);
+expect(
+  client.includes('const hiddenIds = hiddenIdsOf(prefs, order)') &&
+    client.includes('const hiddenIds = hiddenIdsOf(prefs, ordered)'),
+  'the engine and the manager no longer share one hidden-id set',
+);
+expect(
+  (client.match(/plan\.hiddenIds/g) || []).length >= 5,
+  'the engine still hides rows from the per-row list only',
+);
+expect(
+  client.includes('const hideable = members.filter((id) => id !== PANEL_KEY)') &&
+    client.includes('hideable.length === 0') &&
+    client.includes("t('showGroup')"),
+  'a group row lost its eye switch or its fixed-row guard',
+);
+expect(
+  client.indexOf("t('deleteGroup')") >= 0 &&
+    client.indexOf("t('deleteGroup')") < client.indexOf("t('showGroup')"),
+  'the group eye is not the last action in the row',
+);
 
 expect(client.includes("const BUILD_STAMP = 'dsh-panel-control/" + pkg.version + "'"), 'BUILD_STAMP and package.json version disagree');
 expect(pkg.scripts && String(pkg.scripts.check).includes('layout-smoke'), 'npm run check no longer runs this gate');

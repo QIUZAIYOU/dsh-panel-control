@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.9.3';
+  const BUILD_STAMP = 'dsh-panel-control/0.9.4';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -319,12 +319,16 @@ function build(require) {
     hideIt: { zh: '隐藏', en: 'Hide' },
     showIt: { zh: '显示', en: 'Show' },
     hiddenChip: { zh: '已隐藏', en: 'hidden' },
+    groupHiddenChip: { zh: '分组已隐藏', en: 'group hidden' },
+    groupHiddenHint: { zh: '所在分组已隐藏，先在分组行上点显示。', en: 'This group is hidden — show the group first.' },
+    hideGroup: { zh: '隐藏整组', en: 'Hide group' },
+    showGroup: { zh: '显示整组', en: 'Show group' },
     groupLabel: { zh: '分组', en: 'Group' },
     ungrouped: { zh: '未分组', en: 'Ungrouped' },
     groupsTitle: { zh: '分组', en: 'Groups' },
     groupsHint: {
-      zh: '分组会在侧栏导航区里显示成带标题的分隔线，同一组的入口会被排在一起；这里的上下顺序就是侧栏里的顺序，拖动行可以调整。',
-      en: 'A group renders as a titled separator in the sidebar and keeps its entries together. The order here is the order in the sidebar — drag a row to change it.',
+      zh: '分组会在侧栏导航区里显示成带标题的分隔线，同一组的入口会被排在一起；这里的上下顺序就是侧栏里的顺序，拖动行可以调整。分组行上的眼睛可以整组隐藏，不会覆盖单行的隐藏状态。',
+      en: 'A group renders as a titled separator in the sidebar and keeps its entries together. The order here is the order in the sidebar — drag a row to change it. The eye on a group hides it as a whole without overwriting any single row’s hidden state.',
     },
     newGroup: { zh: '新建分组', en: 'New group' },
     newGroupName: { zh: '新分组', en: 'New group' },
@@ -400,6 +404,11 @@ function build(require) {
     layoutTagsHint: {
       zh: '改过显示名的入口会在侧栏行右侧显示插件包名（省略 dsh- 前缀）；关掉后全部隐藏。',
       en: 'A renamed entry shows its plugin package name (with the dsh- prefix trimmed) in a small tag on the right of its sidebar row. Turn this off to hide them all.',
+    },
+    layoutCounts: { zh: '分组成员数', en: 'Group member counts' },
+    layoutCountsHint: {
+      zh: '在分组行显示该组的入口数量，默认关闭。',
+      en: 'Show how many entries each group has. Off by default.',
     },
     layoutCollapseAll: { zh: '全部收起', en: 'Fold all' },
     layoutExpandAll: { zh: '全部展开', en: 'Unfold all' },
@@ -485,6 +494,7 @@ function build(require) {
     version: 2,
     order: [],
     hidden: [],
+    hiddenGroups: [],
     groups: [],
     assign: {},
     auto: false,
@@ -495,6 +505,7 @@ function build(require) {
     bridge: true,
     names: {},
     tags: true,
+    counts: false,
     panelMax: 45,
   });
 
@@ -539,6 +550,7 @@ function build(require) {
     out.order = uniqueIds(raw.order, LIMITS.order);
     out.autoFiled = uniqueIds(raw.autoFiled, LIMITS.autoFiled);
     out.hidden = uniqueIds(raw.hidden, LIMITS.hidden);
+    out.hiddenGroups = uniqueIds(raw.hiddenGroups, LIMITS.groups);
     out.collapsed = uniqueIds(raw.collapsed, LIMITS.collapsed);
     // Files written before the layout guard existed must come back with the
     // guard on: the whole point is that an old sidebar keeps working. An
@@ -548,6 +560,8 @@ function build(require) {
     // Missing in files written before the bridge existed: those installs get the
     // feature by default, exactly like a fresh one.
     out.bridge = raw.bridge !== false;
+    // Counts are off unless the file says otherwise; the switch is opt-in.
+    out.counts = raw.counts === true;
     const cap = Math.round(Number(raw.panelMax));
     out.panelMax = Number.isFinite(cap) ? Math.min(70, Math.max(0, cap)) : 45;
     if (Array.isArray(raw.groups)) {
@@ -610,6 +624,7 @@ function build(require) {
     Boolean(prefs) &&
     ((prefs.order || []).length > 0 ||
       (prefs.hidden || []).length > 0 ||
+      (prefs.hiddenGroups || []).length > 0 ||
       (prefs.groups || []).length > 0 ||
       (prefs.collapsed || []).length > 0 ||
       (prefs.autoFiled || []).length > 0 ||
@@ -620,6 +635,7 @@ function build(require) {
       prefs.collapse === false ||
       prefs.bridge === false ||
       prefs.tags === false ||
+      prefs.counts === true ||
       Object.keys(prefs.names || {}).length > 0 ||
       (typeof prefs.panelMax === 'number' && prefs.panelMax !== 45));
 
@@ -1519,6 +1535,23 @@ function build(require) {
     return map;
   }
 
+  /**
+   * Rows hidden in the sidebar, from both the per-row switch and the group one.
+   * The panel manager's own row is never hidden by a group: otherwise the only
+   * door back into this page would disappear with the group.
+   */
+  function hiddenIdsOf(prefs, order) {
+    const hidden = new Set(prefs.hidden || []);
+    const groups = new Set(prefs.hiddenGroups || []);
+    if (groups.size === 0) return hidden;
+    for (const id of order) {
+      if (id === PANEL_KEY) continue;
+      const groupId = (prefs.assign || {})[id] || '';
+      if (groupId && groups.has(groupId)) hidden.add(id);
+    }
+    return hidden;
+  }
+
   function createEngine(ctx) {
     let scheduled = false;
     let destroyed = false;
@@ -1535,8 +1568,8 @@ function build(require) {
     const readPlan = () => {
       const entries = readEntries(ctx.slots);
       const prefs = store.state.prefs;
-      const hidden = new Set(prefs.hidden || []);
       const ordered = normalize(prefs, entries);
+      const hiddenIds = hiddenIdsOf(prefs, ordered);
       const groups = prefs.groups || [];
       const known = new Set(groups.map((group) => group.id));
       const buckets = new Map();
@@ -1561,7 +1594,7 @@ function build(require) {
         return groupId === '' || !known.has(groupId);
       });
       if (loose.length > 0) blocks.push({ id: '', name: groups.length > 0 ? t('ungrouped') : '', ids: loose });
-      return { entries, prefs, hidden, blocks };
+      return { entries, prefs, hiddenIds, blocks };
     };
 
     /**
@@ -1589,7 +1622,7 @@ function build(require) {
           kind: 'panellist',
           listClass: diag.listClass,
           entries: plan.entries.map((entry) => `${entry.id}@${entry.order}`).join(','),
-          hidden: Array.from(plan.hidden).join(','),
+          hidden: Array.from(plan.hiddenIds).join(','),
           rows: rows.join(' · ').slice(0, 1500),
         });
       } catch {
@@ -1665,12 +1698,14 @@ function build(require) {
       const label = document.createElement('span');
       label.className = 'dpc-sepLabel';
       label.textContent = block.name;
-      const count = document.createElement('span');
-      count.className = 'dpc-sepCount';
-      count.textContent = String(block.count);
       element.appendChild(caret);
       element.appendChild(label);
-      element.appendChild(count);
+      if (block.count !== null) {
+        const count = document.createElement('span');
+        count.className = 'dpc-sepCount';
+        count.textContent = String(block.count);
+        element.appendChild(count);
+      }
       return element;
     };
 
@@ -1872,10 +1907,11 @@ function build(require) {
 
       const nextSignature = JSON.stringify({
         blocks: plan.blocks,
-        hidden: plan.hidden ? Array.from(plan.hidden).sort() : [],
+        hidden: plan.hiddenIds ? Array.from(plan.hiddenIds).sort() : [],
         entries: plan.entries.map((entry) => entry.id + ':' + entry.label),
         names: plan.prefs.names || {},
         tags: plan.prefs.tags !== false,
+        counts: plan.prefs.counts === true,
         wide,
         folded: Array.from(folded),
       });
@@ -1904,14 +1940,23 @@ function build(require) {
         let position = ORDER_START;
         for (const block of plan.blocks) {
           const inBlock = block.ids.filter((id) => map.has(id));
-          const shown = inBlock.filter((id) => !plan.hidden.has(id));
+          const shown = inBlock.filter((id) => !plan.hiddenIds.has(id));
           if (shown.length === 0) continue;
           const foldedHere = block.id !== '' && folded.has(block.id);
-          // The title stays while the group is folded: it is the only way back,
-          // and the count keeps the hidden rows discoverable.
+          // The title stays while the group is folded: it is the only way back.
+          // The count is optional because it is noise for some people, and the
+          // settings switch governs both the manager and this separator.
           if (wide && block.name) {
             list.appendChild(
-              makeSeparator({ id: block.id, name: block.name, count: shown.length, folded: foldedHere }, position),
+              makeSeparator(
+                {
+                  id: block.id,
+                  name: block.name,
+                  count: plan.prefs.counts === true ? shown.length : null,
+                  folded: foldedHere,
+                },
+                position,
+              ),
             );
             position += ORDER_STEP;
           }
@@ -1927,7 +1972,7 @@ function build(require) {
           }
         }
 
-        for (const id of plan.hidden) {
+        for (const id of plan.hiddenIds) {
           const button = map.get(id);
           if (!button) continue;
           button.style.display = 'none';
@@ -1941,7 +1986,7 @@ function build(require) {
           if (block.id === '' || !folded.has(block.id)) continue;
           for (const id of block.ids) {
             const button = map.get(id);
-            if (!button || plan.hidden.has(id)) continue;
+            if (!button || plan.hiddenIds.has(id)) continue;
             button.style.display = 'none';
             button.setAttribute('data-dpc-collapsed', '');
           }
@@ -2138,7 +2183,7 @@ function build(require) {
   }
 
   function showAll() {
-    commit({ ...prefsNow(), hidden: [] });
+    commit({ ...prefsNow(), hidden: [], hiddenGroups: [] });
   }
 
   function resetAll() {
@@ -2151,6 +2196,13 @@ function build(require) {
     if (hidden.has(id)) hidden.delete(id);
     else hidden.add(id);
     commit({ ...prefsNow(), hidden: Array.from(hidden) });
+  }
+
+  function toggleGroupHidden(groupId) {
+    const hiddenGroups = new Set(prefsNow().hiddenGroups || []);
+    if (hiddenGroups.has(groupId)) hiddenGroups.delete(groupId);
+    else hiddenGroups.add(groupId);
+    commit({ ...prefsNow(), hiddenGroups: Array.from(hiddenGroups) });
   }
 
   function setGroup(id, groupId) {
@@ -2189,7 +2241,8 @@ function build(require) {
     for (const [panelId, assigned] of Object.entries(assign)) {
       if (assigned === groupId) delete assign[panelId];
     }
-    commit({ ...prefs, groups, assign });
+    const hiddenGroups = (prefs.hiddenGroups || []).filter((id) => id !== groupId);
+    commit({ ...prefs, groups, assign, hiddenGroups });
   }
 
   /* ------------------------------------------------------- auto classify */
@@ -2711,7 +2764,8 @@ function build(require) {
     const order = normalize(prefs, entries);
     const rawOf = new Map(entries.map((entry) => [entry.id, entry.label]));
     const labelOf = new Map(entries.map((entry) => [entry.id, displayName(prefs, entry.id, entry.label)]));
-    const hidden = new Set(prefs.hidden || []);
+    const hiddenGroups = new Set(prefs.hiddenGroups || []);
+    const hiddenIds = hiddenIdsOf(prefs, order);
     const groupsOf = prefs.groups || [];
     const autoOn = prefs.auto === true;
     const autoState = state.autoState || { status: 'idle', message: '', groups: 0 };
@@ -2764,7 +2818,7 @@ function build(require) {
               type: 'button',
               className: 'dpc-link',
               onClick: showAll,
-              disabled: hidden.size === 0,
+              disabled: hiddenIds.size === 0,
             },
             t('showAll'),
           ),
@@ -2776,7 +2830,7 @@ function build(require) {
         { className: 'dpc-meta' },
         h('span', { className: 'dpc-lede' }, t('subtitle')),
         h('span', { className: 'dpc-sepText', 'aria-hidden': true }, '·'),
-        h('span', { className: 'dpc-count' }, fill(t('countFmt'), { n: order.length, h: hidden.size })),
+        h('span', { className: 'dpc-count' }, fill(t('countFmt'), { n: order.length, h: hiddenIds.size })),
       ),
       h('p', { className: 'dpc-note dpc-hint' }, t('hint')),
     );
@@ -2905,7 +2959,9 @@ function build(require) {
     const rows = order.map((id, position) => {
       const label = labelOf.get(id) || id;
       const rawLabel = rawOf.get(id) || id;
-      const isHidden = hidden.has(id);
+      const groupId = prefs.assign[id] || '';
+      const groupHidden = groupId !== '' && hiddenGroups.has(groupId);
+      const isHidden = hiddenIds.has(id);
       const locked = id === PANEL_KEY;
       return h(
         'li',
@@ -2953,7 +3009,11 @@ function build(require) {
           'span',
           { className: 'dpc-tags' },
           locked ? h('span', { className: 'dpc-tag' }, t('locked')) : null,
-          isHidden ? h('span', { className: 'dpc-tag' }, t('hiddenChip')) : null,
+          groupHidden
+            ? h('span', { className: 'dpc-tag' }, t('groupHiddenChip'))
+            : isHidden
+              ? h('span', { className: 'dpc-tag' }, t('hiddenChip'))
+              : null,
         ),
         groupsOf.length === 0
           ? null
@@ -2970,9 +3030,9 @@ function build(require) {
         }),
         iconButton(
           isHidden ? 'eyeOff' : 'eye',
-          locked ? t('lockedHint') : isHidden ? t('showIt') : t('hideIt'),
+          locked ? t('lockedHint') : groupHidden ? t('groupHiddenHint') : isHidden ? t('showIt') : t('hideIt'),
           () => toggleHidden(id),
-          locked,
+          locked || groupHidden,
           { 'aria-pressed': isHidden ? 'false' : 'true', className: 'dpc-icon dpc-eye' },
         ),
       );
@@ -2980,11 +3040,14 @@ function build(require) {
 
     const groupRow = (group, index) => {
       const members = order.filter((id) => (prefs.assign[id] || '') === group.id);
+      const hideable = members.filter((id) => id !== PANEL_KEY);
+      const groupHidden = hiddenGroups.has(group.id);
       return h(
         'li',
         {
           key: group.id,
           className: 'dpc-group',
+          'data-hidden': groupHidden ? 'true' : 'false',
           ...dragProps(group.id, groupDrag, setGroupDrag, moveGroupBefore),
         },
         h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
@@ -2998,8 +3061,15 @@ function build(require) {
         h(
           'span',
           { className: 'dpc-groupActions' },
-          h('span', { className: 'dpc-count' }, String(members.length)),
+          countsOn ? h('span', { className: 'dpc-count' }, String(members.length)) : null,
           iconButton('close', t('deleteGroup'), () => removeGroup(group.id), false),
+          iconButton(
+            groupHidden ? 'eyeOff' : 'eye',
+            groupHidden ? t('showGroup') : t('hideGroup'),
+            () => toggleGroupHidden(group.id),
+            hideable.length === 0,
+            { 'aria-pressed': groupHidden ? 'false' : 'true', className: 'dpc-icon dpc-eye' },
+          ),
         ),
       );
     };
@@ -3010,6 +3080,7 @@ function build(require) {
     const foldingOn = prefs.collapse !== false;
     const bridgeOn = prefs.bridge !== false;
     const tagsOn = prefs.tags !== false;
+    const countsOn = prefs.counts === true;
     const capNow = typeof prefs.panelMax === 'number' ? prefs.panelMax : 45;
     const setLayout = (patch) => commit({ ...prefsNow(), ...patch });
     const layoutSwitch = (on, label, onClick) =>
@@ -3064,6 +3135,11 @@ function build(require) {
         t('layoutTags'),
         t('layoutTagsHint'),
         layoutSwitch(tagsOn, t('layoutTags'), () => setLayout({ tags: !tagsOn })),
+      ),
+      layoutRow(
+        t('layoutCounts'),
+        t('layoutCountsHint'),
+        layoutSwitch(countsOn, t('layoutCounts'), () => setLayout({ counts: !countsOn })),
       ),
       layoutRow(
         t('layoutMax'),

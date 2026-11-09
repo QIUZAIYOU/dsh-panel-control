@@ -401,6 +401,47 @@ check(titleOf(disposed.buttons[0]).textContent === '插件', 'dispose did not re
 check(!tagOf(disposed.buttons[0]), 'dispose left the original-name tag behind');
 check(!disposed.buttons[0].getAttribute('data-dpc-label'), 'dispose left the original-label marker behind');
 
+// 7. A hidden group hides its members on its own, without writing them into
+//    the per-row hidden list (so showing the group can restore the old state).
+const grouped = await run({
+  version: 2,
+  groups: [{ id: 'g1', name: '组' }],
+  assign: { plugins: 'g1', 'dsh-market': 'g1' },
+  hiddenGroups: ['g1'],
+});
+check(grouped.buttons[0].style.display === 'none', 'a hidden group did not hide its first member');
+check(grouped.buttons[1].style.display === 'none', 'a hidden group did not hide its second member');
+check(grouped.buttons[2].style.display !== 'none', 'a hidden group hid an ungrouped row');
+check(
+  !grouped.list.children.some((node) => node.getAttribute('data-dpc-group-id') === 'g1'),
+  'a fully hidden group still drew its separator',
+);
+
+// 8. The member-count switch also governs the sidebar group separator. It is
+//    off by default, so a visible group draws a title without a number.
+const sepOf = (list) => list.children.find((node) => node.getAttribute('data-dpc-group-id') === 'g1');
+const countOf = (sep) =>
+  sep && sep.children.find((child) => String(child.className).split(/\s+/).includes('dpc-sepCount'));
+const noCounts = await run({
+  version: 2,
+  groups: [{ id: 'g1', name: '组' }],
+  assign: { plugins: 'g1', 'dsh-market': 'g1' },
+});
+const sepOff = sepOf(noCounts.list);
+check(Boolean(sepOff), 'a visible group did not draw its separator');
+check(sepOff && !countOf(sepOff), 'the sidebar showed a group count while the switch was off');
+
+// 9. Turning it on adds the number of currently visible members.
+const withCounts = await run({
+  version: 2,
+  counts: true,
+  groups: [{ id: 'g1', name: '组' }],
+  assign: { plugins: 'g1', 'dsh-market': 'g1' },
+});
+const sepOn = sepOf(withCounts.list);
+check(Boolean(sepOn), 'the counted group did not draw its separator');
+check(countOf(sepOn) && countOf(sepOn).textContent === '2', 'the sidebar group count is wrong or missing');
+
 console.log(
   JSON.stringify(
     {
@@ -411,6 +452,8 @@ console.log(
       railTag: Boolean(tagOf(rail.buttons[0])),
       duplicates: dupButtons.map((button) => button.getAttribute('aria-label')),
       unmappedTag: tagOf(unmapped.buttons[2]) ? tagOf(unmapped.buttons[2]).textContent : null,
+      sidebarCountOff: sepOff ? !countOf(sepOff) : null,
+      sidebarCountOn: countOf(sepOn) ? countOf(sepOn).textContent : null,
     },
     null,
     2,
