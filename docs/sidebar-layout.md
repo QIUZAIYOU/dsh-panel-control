@@ -30,6 +30,25 @@
 6. **分组成员数是可选显示**，由 `prefs.counts` 控制，默认关闭。打开后设置页分组行显示成员数，侧栏
    分组标题也带同样的数字；关掉时两处都不渲染（侧栏连 `dpc-sepCount` 节点都不创建），顶部工具栏的
    「N 个入口 · 隐藏 M 个」不受它影响。`counts` 进入 apply 签名，切换开关会立刻重画分组标题。
+7. **组内顺序不另存字段**。`prefs.order` 仍是所有入口的唯一顺序；分组只是按 `prefs.assign` 过滤它。
+   设置页读同一份 `order`：左栏是未分组项，右栏每个组按 `order` 过滤出成员。拖一行进组时，
+   `moveRowToGroup()` 在一次 `commit` 里同时改 `order`（移到目标前或末尾）和 `assign`，所以侧栏不会
+   先按旧组渲染一帧再跳。组标题拖动只调 `moveGroupBefore()` 改 `prefs.groups` 的先后。
+8. **左栏是暂存区，不是侧栏的「未分组」区**。只要至少有一个已填充的分组，`readPlan()` 就把未分组
+   入口加入 `hiddenIds`，侧栏不渲染它们；`panel-control` 自己例外，并在 blocks 末尾保留一个无标题
+   的尾部块，保证管理器仍可达。没有任何已填充分组时（新装、或所有组都空）仍回退到显示全部入口，
+   不会出现空白侧栏。
+9. **设置页的组收起是视图状态，不写 prefs**。右栏里隐藏组默认收起、可见组默认展开；`groupFold`
+   只存本次访问的显式覆盖。组标题前的 chevron 只改这个覆盖，不碰 `hiddenGroups`；眼睛切换前会
+   清掉覆盖，让组回到「隐藏即收起、显示即展开」的默认。拖到收起组标题上归类后自动展开，否则
+   用户会以为拖拽没生效。折叠时整段 `ul.dpc-treeChildren` 不挂载，不只是 `display:none`。
+10. **安全分类只碰用户没动过的入口；「全部分类」是一次性覆盖**。`prefs.autoSkip` 记手动锁定：拖拽归类/排序时
+   `moveRowToGroup()` 在同一次 commit 里加锁；删除分组时，被清掉 `assign` 的成员也加锁。
+   旧文件没有 `autoSkip`，`autoSkipSet()` 用现有数据反推：`autoFiled` 里已有记录、但当前 `assign`
+   为空或指向不存在的组，只可能是被手动拖出或随组删除。设置页给两个手动入口：
+   `classifyNow('new')` 请求前过滤锁定项，`applyClassification()` 再过滤模型返回的 id；
+   `classifyNow('all')` 把全部入口发给模型，`applyClassification(..., 'all')` 绕过 skip，
+   但不清 `autoSkip`，所以之后的安全分类仍遵守锁定。自动开关的 unseen 同时排除 `autoFiled` 与 `autoSkip`。
 
 ## 边界
 
@@ -38,11 +57,20 @@
 - 上限夹在 0–70vh；`sanitize()` 会把历史文件里缺失的字段补成默认值（guard/collapse 默认开，panelMax 45）。
 - 折叠状态按组 id 保存；组被删除后残留的 id 无害，`sanitize()` 会去重并限长。
 - 分组隐藏也按组 id 保存：新加入该组的入口会随组一起隐藏；删除分组时同时清掉它的隐藏标记。
+- 设置页的组收起不保存：刷新页面后，隐藏组仍默认收起、可见组仍默认展开；只有眼睛的显隐状态会持久化。
 - 分组成员数默认关闭；旧配置没有 `counts` 字段时 `sanitize()` 补成 `false`，不会因为升级突然多出数字。
+- 删除分组不删除入口：`assign` 里的成员被清掉后，按 `order` 回到左栏暂存区，并从侧栏消失（如果还有其它已填充分组）。
+- 组内顺序就是 `order` 里的相对顺序；从组里拖回左栏会保留它在 `order` 里的位置，只是不再有 `assign`，也不再显示在侧栏。
+- 手动锁定是一次性的：拖进组、拖出组、组内排序、删除组都会锁定该入口；之后再点「只分未动过的」或打开自动开关都不会改它。「全部分类」是一次性覆盖：这次会把锁定项一起重新分配，但不清除锁定，下一次安全分类仍会跳过它们。
+- 没有任何已填充分组时，左栏入口仍会显示在侧栏；这是为了避免新装或清空分组后侧栏变空。
 
 ## 验证
 
-- `npm run check` 跑 `scripts/layout-smoke.mjs`：断言属性钩子、CSS 三条规则、`BUILD_STAMP` 与
+- `npm run check` 跑 `scripts/layout-smoke.mjs` 与 `scripts/names-smoke.mjs`：断言属性钩子、CSS 三条规则、
+  chevron/`data-collapsed`/条件渲染，以及隐藏组默认收起、可见组默认展开；`names-smoke` 的两个自动分类
+  场景分别断言：安全模式不把手动锁定项放进模型请求、也不会被返回结果重新分组；自动开关关闭时两个手动
+  按钮都在，全部分类会把锁定项一起发出去、重新分配，但 `autoSkip` 保持不变，并校验 `BUILD_STAMP` 与
   `package.json` 版本一致。
 - 运行时：`[data-dpc-list]` 的 `getComputedStyle(...).overflowY` 应为 `auto`，上限 45vh 时
-  `maxHeight` 为 `max(120px, 45vh)`；点标题后该组按钮 `display:none`、标题仍在。
+  `maxHeight` 为 `max(120px, 45vh)`；点标题后该组按钮 `display:none`、标题仍在；设置页里隐藏组的
+  `data-collapsed="true"`，且 DOM 中没有它的 `ul.dpc-treeChildren`。

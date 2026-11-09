@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.9.4';
+  const BUILD_STAMP = 'dsh-panel-control/0.10.0';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -316,6 +316,15 @@ function build(require) {
     sortByName: { zh: '按名称排序', en: 'Sort by name' },
     reset: { zh: '恢复默认', en: 'Reset' },
     showAll: { zh: '全部显示', en: 'Show all' },
+    pluginsTitle: { zh: '插件', en: 'Plugins' },
+    pluginsHint: {
+      zh: '未分组的入口只在这里出现，不显示在侧栏；拖进右侧分组后才会出现。',
+      en: 'Ungrouped entries live here only, not in the sidebar. Drag one into a group to show it.',
+    },
+    treeEmpty: { zh: '全部入口都已分组。', en: 'Every entry is grouped.' },
+    treeGroupEmpty: { zh: '拖到这里', en: 'Drop here' },
+    dropHere: { zh: '松手放到这里', en: 'Drop here' },
+    ungroupHint: { zh: '拖到这里移出分组（侧栏隐藏）', en: 'Drop here to ungroup (hides it from the sidebar)' },
     hideIt: { zh: '隐藏', en: 'Hide' },
     showIt: { zh: '显示', en: 'Show' },
     hiddenChip: { zh: '已隐藏', en: 'hidden' },
@@ -323,16 +332,18 @@ function build(require) {
     groupHiddenHint: { zh: '所在分组已隐藏，先在分组行上点显示。', en: 'This group is hidden — show the group first.' },
     hideGroup: { zh: '隐藏整组', en: 'Hide group' },
     showGroup: { zh: '显示整组', en: 'Show group' },
+    collapseGroup: { zh: '收起分组', en: 'Collapse group' },
+    expandGroup: { zh: '展开分组', en: 'Expand group' },
     groupLabel: { zh: '分组', en: 'Group' },
     ungrouped: { zh: '未分组', en: 'Ungrouped' },
     groupsTitle: { zh: '分组', en: 'Groups' },
     groupsHint: {
-      zh: '分组会在侧栏导航区里显示成带标题的分隔线，同一组的入口会被排在一起；这里的上下顺序就是侧栏里的顺序，拖动行可以调整。分组行上的眼睛可以整组隐藏，不会覆盖单行的隐藏状态。',
-      en: 'A group renders as a titled separator in the sidebar and keeps its entries together. The order here is the order in the sidebar — drag a row to change it. The eye on a group hides it as a whole without overwriting any single row’s hidden state.',
+      zh: '拖动组标题调整组的先后；把成员拖到另一个组，或拖回左侧，即可改归属。组标题上的眼睛可以整组隐藏，不会覆盖单行的隐藏状态。',
+      en: 'Drag a group header to reorder groups. Drag a member into another group, or back to the left, to change where it belongs. The eye on a group hides it as a whole without overwriting any row’s hidden state.',
     },
     newGroup: { zh: '新建分组', en: 'New group' },
     newGroupName: { zh: '新分组', en: 'New group' },
-    noGroups: { zh: '还没有分组。新建一个分组，再把它分配给下面的入口。', en: 'No groups yet. Create one, then assign entries to it.' },
+    noGroups: { zh: '还没有分组。新建一个，再把左侧入口拖进来。', en: 'No groups yet. Create one, then drag an entry here from the left.' },
     groupName: { zh: '分组名称', en: 'Group name' },
     deleteGroup: { zh: '删除分组', en: 'Delete group' },
     countFmt: { zh: '{n} 个入口 · {h} 个已隐藏', en: '{n} entries · {h} hidden' },
@@ -352,11 +363,11 @@ function build(require) {
     diagYes: { zh: '是', en: 'yes' },
     diagNo: { zh: '否', en: 'no' },
     hint: {
-      zh: '拖行首的把手排序；点铅笔可以改显示名，改过名的入口会在侧栏右侧显示包名。隐藏的入口仍留在列表里，随时可以放回来。',
-      en: 'Drag the handle at the start of a row to reorder it; use the pencil to rename an entry, and a renamed row shows its package name on the right in the sidebar. A hidden entry stays in this list and can come back at any time.',
+      zh: '左边是未分组的入口，右边是分组。拖到组里即可归类，拖到组内某个位置即可排序；拖回左边就是移出分组。铅笔改显示名，眼睛控制显隐。',
+      en: 'Ungrouped entries sit on the left, groups on the right. Drop a row into a group to file it, or onto a position inside the group to sort it; drop it back on the left to ungroup. The pencil renames, the eye hides.',
     },
     renameIt: { zh: '修改显示名', en: 'Rename entry' },
-    dragHint: { zh: '拖动排序', en: 'Drag to reorder' },
+    dragHint: { zh: '拖动排序或分组', en: 'Drag to reorder or group' },
     locked: { zh: '固定显示', en: 'always shown' },
     lockedHint: {
       zh: '这一行是本插件的入口，隐藏后仍可从“设置 → 面板管理”打开本页。',
@@ -415,11 +426,17 @@ function build(require) {
     layoutCollapseOne: { zh: '点此收起', en: 'click to fold' },
     layoutExpandOne: { zh: '点此展开', en: 'click to unfold' },
     autoHint: {
-      zh: '让默认模型把入口分成 2–4 组，结果保存在本机。',
-      en: 'The default model files the entries into 2-4 groups; the result stays on this machine.',
+      zh: '让默认模型把入口分成 2–4 组；手动拖过的入口默认不动，结果保存在本机。',
+      en: 'The default model files entries into 2-4 groups; entries you arranged by hand stay put by default. The result stays on this machine.',
     },
     autoRunning: { zh: '正在分类…', en: 'Classifying…' },
-    autoAgain: { zh: '重新分类', en: 'Classify again' },
+    autoAgain: { zh: '只分未动过的', en: 'Classify untouched' },
+    autoAgainAll: { zh: '全部分类', en: 'Classify all' },
+    autoAgainHint: { zh: '跳过手动拖过的入口', en: 'Skips entries you moved by hand' },
+    autoAgainAllHint: {
+      zh: '手动拖过的入口也会重新分配',
+      en: 'Also reassigns entries you moved by hand',
+    },
     autoDone: { zh: '模型已分成 {n} 组（{m}）。', en: 'The model filed them into {n} groups ({m}).' },
     autoFiledNew: { zh: '已把 {n} 个新入口归入分组（{m}）。', en: 'Filed {n} new entries ({m}).' },
     autoFailed: { zh: '分类失败：{m}', en: 'Classification failed: {m}' },
@@ -430,7 +447,7 @@ function build(require) {
       zh: '这一版客户端拿不到宿主的连接服务，无法调用模型。',
       en: 'This Client build does not expose the Host connection, so the model cannot be called.',
     },
-    autoEmpty: { zh: '没有可分类的入口。', en: 'There is nothing to classify.' },
+    autoEmpty: { zh: '没有需要分类的入口（手动调整过的不会参与）。', en: 'There is nothing to classify (manually arranged entries are left alone).' },
   };
 
   let ctxRef = null;
@@ -499,6 +516,7 @@ function build(require) {
     assign: {},
     auto: false,
     autoFiled: [],
+    autoSkip: [],
     collapsed: [],
     guard: true,
     collapse: true,
@@ -517,7 +535,7 @@ function build(require) {
    * would then build that many separators. The numbers here are far above any
    * real sidebar and turn a hostile or corrupted store into a cheap no-op.
    */
-  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, collapsed: 200, groups: 24, assign: 400, names: 200, name: 40, key: 120 };
+  const LIMITS = { order: 200, hidden: 200, autoFiled: 400, autoSkip: 400, collapsed: 200, groups: 24, assign: 400, names: 200, name: 40, key: 120 };
 
   /** Trim, flatten and cap a user-visible name. Returns '' when it is unusable. */
   function cleanName(value) {
@@ -549,6 +567,7 @@ function build(require) {
     if (!raw || typeof raw !== 'object') return out;
     out.order = uniqueIds(raw.order, LIMITS.order);
     out.autoFiled = uniqueIds(raw.autoFiled, LIMITS.autoFiled);
+    out.autoSkip = uniqueIds(raw.autoSkip, LIMITS.autoSkip);
     out.hidden = uniqueIds(raw.hidden, LIMITS.hidden);
     out.hiddenGroups = uniqueIds(raw.hiddenGroups, LIMITS.groups);
     out.collapsed = uniqueIds(raw.collapsed, LIMITS.collapsed);
@@ -628,6 +647,7 @@ function build(require) {
       (prefs.groups || []).length > 0 ||
       (prefs.collapsed || []).length > 0 ||
       (prefs.autoFiled || []).length > 0 ||
+      (prefs.autoSkip || []).length > 0 ||
       prefs.auto === true ||
       // A file that only turned a switch off is still a file the reader edited;
       // without this, the next load treats it as empty and drops the edit.
@@ -1587,13 +1607,26 @@ function build(require) {
         if (!ids || ids.length === 0) continue;
         blocks.push({ id: group.id, name: group.name, ids });
       }
-      // Unassigned entries (and entries whose group was deleted) form one
-      // trailing block, keeping the order the user gave them.
+      // Unassigned entries (and entries whose group was deleted) are staged in
+      // the settings tree. Once at least one group is populated they stay out
+      // of the sidebar entirely, so the panel is the grouped view the user
+      // arranged; the manager row is the one exception, or a user who left it
+      // ungrouped would lose the way back into this page.
       const loose = ordered.filter((id) => {
         const groupId = prefs.assign[id] || '';
         return groupId === '' || !known.has(groupId);
       });
-      if (loose.length > 0) blocks.push({ id: '', name: groups.length > 0 ? t('ungrouped') : '', ids: loose });
+      if (loose.length > 0) {
+        if (blocks.length === 0) {
+          blocks.push({ id: '', name: '', ids: loose });
+        } else {
+          for (const id of loose) {
+            if (id !== PANEL_KEY) hiddenIds.add(id);
+          }
+          const keep = loose.filter((id) => id === PANEL_KEY);
+          if (keep.length > 0) blocks.push({ id: '', name: '', ids: keep });
+        }
+      }
       return { entries, prefs, hiddenIds, blocks };
     };
 
@@ -2165,10 +2198,57 @@ function build(require) {
     return next;
   }
 
-  function moveBefore(fromId, targetId) {
-    const order = reorderList(orderNow(), fromId, targetId);
-    if (!order) return;
-    commit({ ...prefsNow(), order });
+  /**
+   * Move one entry into a group, or out of every group when groupId is empty.
+   * `beforeId` is a member of the target group (or an ungrouped entry); without
+   * it the entry goes to the end of that group. Order and assignment change in
+   * one commit so the sidebar never renders the row in the old group first.
+   */
+  function moveRowToGroup(rowId, groupId, beforeId) {
+    const prefs = prefsNow();
+    const order = orderNow().filter((id) => id !== rowId);
+    const before = beforeId && beforeId !== rowId ? order.indexOf(beforeId) : -1;
+    if (before >= 0) order.splice(before, 0, rowId);
+    else order.push(rowId);
+    const assign = { ...(prefs.assign || {}) };
+    if (groupId) assign[rowId] = groupId;
+    else delete assign[rowId];
+    // Any drag is a manual decision; auto filing must not undo it later.
+    const autoSkip = new Set(prefs.autoSkip || []);
+    autoSkip.add(rowId);
+    commit({ ...prefs, order, assign, autoSkip: Array.from(autoSkip) });
+  }
+
+  function dropRowOnRow(fromId, targetId, after) {
+    if (fromId === targetId) return;
+    const prefs = prefsNow();
+    const assign = prefs.assign || {};
+    const groupId = assign[targetId] || '';
+    let beforeId = targetId;
+    if (after) {
+      // No "insert after" primitive: find the next row in the same group and
+      // insert before it; an empty id means append to the group.
+      beforeId = '';
+      const order = orderNow();
+      const targetIndex = order.indexOf(targetId);
+      for (let i = targetIndex + 1; i < order.length; i += 1) {
+        const id = order[i];
+        if (id === fromId) continue;
+        if ((assign[id] || '') === groupId) {
+          beforeId = id;
+          break;
+        }
+      }
+    }
+    moveRowToGroup(fromId, groupId, beforeId);
+  }
+
+  function dropRowOnGroup(fromId, groupId) {
+    moveRowToGroup(fromId, groupId, '');
+  }
+
+  function dropRowOnPlugins(fromId) {
+    moveRowToGroup(fromId, '', '');
   }
 
   function sortByName() {
@@ -2205,13 +2285,6 @@ function build(require) {
     commit({ ...prefsNow(), hiddenGroups: Array.from(hiddenGroups) });
   }
 
-  function setGroup(id, groupId) {
-    const assign = { ...(prefsNow().assign || {}) };
-    if (groupId) assign[id] = groupId;
-    else delete assign[id];
-    commit({ ...prefsNow(), assign });
-  }
-
   function addGroup() {
     const groups = (prefsNow().groups || []).slice();
     const name = `${t('newGroupName')} ${groups.length + 1}`;
@@ -2238,11 +2311,16 @@ function build(require) {
     const prefs = prefsNow();
     const groups = (prefs.groups || []).filter((group) => group.id !== groupId);
     const assign = { ...(prefs.assign || {}) };
+    const autoSkip = new Set(prefs.autoSkip || []);
     for (const [panelId, assigned] of Object.entries(assign)) {
-      if (assigned === groupId) delete assign[panelId];
+      if (assigned === groupId) {
+        delete assign[panelId];
+        // Deleting a group is a manual choice; do not let auto filing undo it.
+        autoSkip.add(panelId);
+      }
     }
     const hiddenGroups = (prefs.hiddenGroups || []).filter((id) => id !== groupId);
-    commit({ ...prefs, groups, assign, hiddenGroups });
+    commit({ ...prefs, groups, assign, hiddenGroups, autoSkip: Array.from(autoSkip) });
   }
 
   /* ------------------------------------------------------- auto classify */
@@ -2255,6 +2333,22 @@ function build(require) {
   /** Entries the auto switch has already looked at; it never re-files them. */
   function autoFiledSet() {
     return new Set(store.state.prefs.autoFiled || []);
+  }
+
+  /**
+   * Entries the user positioned by hand; auto filing must leave them alone.
+   * Old files have no autoSkip: an auto-filed entry that no longer belongs to a
+   * live group can only have been dragged out or lost with its deleted group.
+   */
+  function autoSkipSet(prefs = prefsNow()) {
+    const skip = new Set(prefs.autoSkip || []);
+    const groups = new Set((prefs.groups || []).map((group) => group.id));
+    const assign = prefs.assign || {};
+    for (const id of prefs.autoFiled || []) {
+      const groupId = assign[id] || '';
+      if (!groupId || !groups.has(groupId)) skip.add(id);
+    }
+    return skip;
   }
 
   function setAuto(patch) {
@@ -2309,6 +2403,7 @@ function build(require) {
     const entries = store.state.entries || [];
     const known = new Set(entries.map((entry) => entry.id));
     const prefs = prefsNow();
+    const skip = autoSkipSet(prefs);
     const groups = (prefs.groups || []).slice();
     const assign = { ...(prefs.assign || {}) };
     const knownGroups = new Set(groups.map((group) => group.id));
@@ -2316,7 +2411,7 @@ function build(require) {
     const assigned = new Set();
     let count = 0;
     for (const group of (value && value.groups) || []) {
-      const ids = (group.ids || []).filter((id) => known.has(id));
+      const ids = (group.ids || []).filter((id) => known.has(id) && (all || !skip.has(id)));
       if (ids.length === 0) continue;
       let target = groups.find((entry) => sameGroupName(entry.name, group.name));
       if (!target) {
@@ -2365,8 +2460,11 @@ function build(require) {
   let classifyToken = 0;
 
   async function classifyNow(mode) {
+    const all = mode === 'all';
     const entries = store.state.entries || [];
-    if (entries.length === 0) {
+    const skip = autoSkipSet();
+    const candidates = all ? entries : entries.filter((entry) => !skip.has(entry.id));
+    if (entries.length === 0 || candidates.length === 0) {
       setAuto({ status: 'error', message: t('autoEmpty'), at: Date.now() });
       return;
     }
@@ -2383,7 +2481,7 @@ function build(require) {
       const result = await rpc.call(RPC_CHANNEL, RPC_ENDPOINT, {
         method: 'classify',
         payload: {
-          entries: entries.map((entry) => ({ id: entry.id, label: entry.label })),
+          entries: candidates.map((entry) => ({ id: entry.id, label: entry.label })),
           groups: (prefsNow().groups || []).map((group) => ({ name: group.name })),
           locale: activeLang(),
         },
@@ -2428,22 +2526,31 @@ function build(require) {
     eye: 'M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12Z',
     eyeOff: 'M2.5 12S6 6.5 12 6.5c1.6 0 3 .45 4.2 1.1M21.5 12S18 17.5 12 17.5c-1.6 0-3-.45-4.2-1.1M4 4l16 16',
     edit: 'M4 20h4l10.5-10.5a2.12 2.12 0 0 0-3-3L5 17v3Z',
+    folder: 'M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l1.8 2H19a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5v-10Z',
+    chevron: 'M9 6l6 6-6 6',
     back: 'M14.5 6.5 9 12l5.5 5.5',
   };
 
   /** One 16px line glyph, one 1.5 stroke, colours inherited from the text role. */
   function Icon(props) {
     const d = ICON_D[props.name] || '';
-    const children = [
-      h('path', {
-        key: 'p',
-        d,
-        stroke: 'currentColor',
-        strokeWidth: 1.5,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-      }),
-    ];
+    // Six 1.5px round-capped dots collapse to sub-pixel specks at 16px; draw
+    // the grip as filled circles so it survives the viewBox downscale.
+    const children =
+      props.name === 'grip'
+        ? [[9, 7], [9, 12], [9, 17], [15, 7], [15, 12], [15, 17]].map(([cx, cy], index) =>
+            h('circle', { key: 'g' + index, cx, cy, r: 1.6, fill: 'currentColor' }),
+          )
+        : [
+            h('path', {
+              key: 'p',
+              d,
+              stroke: 'currentColor',
+              strokeWidth: 1.5,
+              strokeLinecap: 'round',
+              strokeLinejoin: 'round',
+            }),
+          ];
     if (props.name === 'eye' || props.name === 'eyeOff') {
       children.push(h('circle', { key: 'c', cx: 12, cy: 12, r: 2.6, stroke: 'currentColor', strokeWidth: 1.5 }));
     }
@@ -2614,74 +2721,6 @@ function build(require) {
     return h('span', { className: 'dpc-glyph', 'aria-hidden': true }, node);
   }
 
-  // A native <select> gets its option list painted by the OS widget: it ignores
-  // page colors and pops up white-on-white against this theme. This picker draws
-  // the same choice in our own colors.
-  function GroupPicker(props) {
-    const [open, setOpen] = React.useState(false);
-    const rootRef = React.useRef(null);
-    React.useEffect(() => {
-      if (!open) return undefined;
-      const close = (event) => {
-        if (event.type === 'keydown' && event.key !== 'Escape') return;
-        if (event.type === 'mousedown' && rootRef.current && rootRef.current.contains(event.target)) return;
-        setOpen(false);
-      };
-      document.addEventListener('mousedown', close, true);
-      document.addEventListener('keydown', close, true);
-      return () => {
-        document.removeEventListener('mousedown', close, true);
-        document.removeEventListener('keydown', close, true);
-      };
-    }, [open]);
-    const value = props.value || '';
-    const options = [{ value: '', label: props.ungrouped }].concat(
-      (props.groups || []).map((group) => ({ value: group.id, label: group.name })),
-    );
-    const current = options.find((option) => option.value === value) || options[0];
-    return h(
-      'div',
-      { className: 'dpc-picker', ref: rootRef, 'data-open': open ? 'true' : undefined },
-      h(
-        'button',
-        {
-          type: 'button',
-          className: 'dpc-pickerBtn',
-          'aria-haspopup': 'listbox',
-          'aria-expanded': open ? 'true' : 'false',
-          'aria-label': props.label,
-          title: current.label,
-          onClick: () => setOpen((was) => !was),
-        },
-        h('span', { className: 'dpc-pickerText' }, current.label),
-        h('span', { className: 'dpc-caret', 'aria-hidden': 'true' }),
-      ),
-      open
-        ? h(
-            'div',
-            { className: 'dpc-menu', role: 'listbox', 'aria-label': props.label },
-            options.map((option) =>
-              h(
-                'button',
-                {
-                  key: option.value || '__ungrouped',
-                  type: 'button',
-                  role: 'option',
-                  className: 'dpc-option',
-                  'aria-selected': option.value === value ? 'true' : 'false',
-                  onClick: () => {
-                    setOpen(false);
-                    props.onPick(option.value);
-                  },
-                },
-                option.label,
-              ),
-            ),
-          )
-        : null,
-    );
-  }
-
   function PanelManager(props) {
     // The same body serves the main panel and the settings section: the section
     // is already inside a framed column, so it opts out of the page frame.
@@ -2691,49 +2730,129 @@ function build(require) {
     const entries = state.entries;
     const engine = engineRef;
     const dragRef = React.useRef(null);
-    const [rowDrag, setRowDrag] = React.useState({ from: null, over: null });
+    // One drag gesture can cross two kinds of surfaces: a row is a source, a
+    // row/group/empty pane is a target. Keeping the source in a ref means the
+    // drop still works if React re-renders the list mid-drag.
+    const [drag, setDrag] = React.useState({
+      kind: null,
+      from: null,
+      overKind: null,
+      overId: null,
+      overMode: null,
+    });
     // Dismissing the banner is a local decision, not a store update: the same
     // check runs again on focus, and the answer must not pop back up.
     const [, forceRender] = React.useReducer((n) => n + 1, 0);
-    const [groupDrag, setGroupDrag] = React.useState({ from: null, over: null });
     const [editing, setEditing] = React.useState(null);
     const [draft, setDraft] = React.useState('');
+    // A hidden group defaults to collapsed; an entry here is a user override
+    // for this visit only. It is deliberately not persisted: the eye owns the
+    // durable state, the caret only controls what the settings page shows.
+    const [groupFold, setGroupFold] = React.useState({});
     const cancelRenameRef = React.useRef(false);
-    /**
-     * Dragging works the same for a row and for a section: the handle starts it,
-     * the target highlights, dropping commits "move before this one". Only the
-     * commit differs, so the four handlers live here once instead of twice.
-     */
-    const dragProps = (id, state, setDrag, commitMove) => ({
+    const idleDrag = { kind: null, from: null, overKind: null, overId: null, overMode: null };
+
+    const endDrag = () => {
+      dragRef.current = null;
+      setDrag(idleDrag);
+    };
+
+    /** Only the grip starts a drag; inputs and buttons stay usable. */
+    const dragSource = (kind, id) => ({
       draggable: true,
-      'data-dragging': state.from === id ? 'true' : 'false',
-      'data-over': state.over === id && state.from !== id ? 'true' : 'false',
       onDragStart: (event) => {
-        dragRef.current = id;
-        setDrag({ from: id, over: null });
+        event.stopPropagation();
+        dragRef.current = { kind, id };
+        setDrag({ kind, from: id, overKind: null, overId: null, overMode: null });
         try {
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', id);
+          // The default ghost is the grip itself — a 16px icon. Snapshot the
+          // whole row (or group header) so the user can see what is moving.
+          const node = event.currentTarget;
+          const row = node && typeof node.closest === 'function' ? node.closest('li.dpc-row') : null;
+          const group =
+            node && typeof node.closest === 'function' ? node.closest('li.dpc-treeGroup') : null;
+          const ghost =
+            kind === 'group' && group
+              ? group.querySelector('.dpc-groupHead') || group
+              : row || group || node;
+          if (ghost && typeof event.dataTransfer.setDragImage === 'function') {
+            event.dataTransfer.setDragImage(ghost, 20, 18);
+          }
         } catch {
           /* older engines refuse writes; the ref already holds the id */
         }
       },
-      onDragOver: (event) => {
-        event.preventDefault();
-        setDrag((prev) => (prev.over === id ? prev : { ...prev, over: id }));
-      },
-      onDrop: (event) => {
-        event.preventDefault();
-        const from = dragRef.current;
-        dragRef.current = null;
-        setDrag({ from: null, over: null });
-        if (from && from !== id) commitMove(from, id);
-      },
-      onDragEnd: () => {
-        dragRef.current = null;
-        setDrag({ from: null, over: null });
-      },
+      onDragEnd: endDrag,
     });
+
+    /**
+     * A target names the source kinds it accepts and receives the source id and
+     * kind. stopPropagation is required: a member row sits inside a group body,
+     * and without it both would fire on one drop.
+     */
+    const dragTarget = (kind, id, { accept, onDrop, mode = 'before' }) => {
+      const resolveMode = (event) => {
+        if (typeof mode === 'function') return mode(dragRef.current && dragRef.current.kind);
+        if (mode === 'split') {
+          const box = event.currentTarget && event.currentTarget.getBoundingClientRect
+            ? event.currentTarget.getBoundingClientRect()
+            : null;
+          return box && event.clientY > box.top + box.height / 2 ? 'after' : 'before';
+        }
+        return mode;
+      };
+      const clearOver = () => {
+        setDrag((prev) =>
+          prev.overKind === kind && prev.overId === id
+            ? { ...prev, overKind: null, overId: null, overMode: null }
+            : prev,
+        );
+      };
+      return {
+        'data-over': drag.overKind === kind && drag.overId === id ? 'true' : 'false',
+        onDragOver: (event) => {
+          const source = dragRef.current;
+          if (!source || !accept.includes(source.kind)) return;
+          if (source.kind === kind && source.id === id) {
+            event.stopPropagation();
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          try {
+            event.dataTransfer.dropEffect = 'move';
+          } catch {
+            /* the ref still carries the move */
+          }
+          const next = resolveMode(event);
+          setDrag((prev) =>
+            prev.overKind === kind && prev.overId === id && prev.overMode === next
+              ? prev
+              : { ...prev, overKind: kind, overId: id, overMode: next },
+          );
+        },
+        onDragLeave: (event) => {
+          const related = event.relatedTarget;
+          if (related && event.currentTarget && event.currentTarget.contains(related)) return;
+          clearOver();
+        },
+        onDrop: (event) => {
+          const source = dragRef.current;
+          if (!source || !accept.includes(source.kind)) return;
+          if (source.kind === kind && source.id === id) {
+            event.stopPropagation();
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const dropped = resolveMode(event);
+          endDrag();
+          onDrop(source.id, source.kind, dropped);
+        },
+      };
+    };
 
     React.useEffect(() => {
       if (engine) engine.refresh();
@@ -2753,13 +2872,14 @@ function build(require) {
       if (filed.size === 0 && (prefs.groups || []).length > 0) {
         for (const entry of entries) filed.add(entry.id);
       }
-      const unseen = entries.filter((entry) => !filed.has(entry.id));
+      const skip = autoSkipSet(prefs);
+      const unseen = entries.filter((entry) => !filed.has(entry.id) && !skip.has(entry.id));
       if (unseen.length === 0) return;
       const timer = setTimeout(() => {
         void classifyNow('new');
       }, AUTO_DELAY_MS);
       return () => clearTimeout(timer);
-    }, [prefs.auto, prefs.autoFiled, entries.length, state.autoState && state.autoState.status]);
+    }, [prefs.auto, prefs.autoFiled, prefs.autoSkip, entries.length, state.autoState && state.autoState.status]);
 
     const order = normalize(prefs, entries);
     const rawOf = new Map(entries.map((entry) => [entry.id, entry.label]));
@@ -2900,18 +3020,28 @@ function build(require) {
         h(
           'div',
           { className: 'dpc-autoActions' },
-          autoOn
-            ? h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dpc-link',
-                  onClick: () => classifyNow(),
-                  disabled: autoState.status === 'running',
-                },
-                t('autoAgain'),
-              )
-            : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dpc-link',
+              onClick: () => classifyNow('new'),
+              disabled: autoState.status === 'running',
+              title: t('autoAgainHint'),
+            },
+            t('autoAgain'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dpc-link dpc-link--danger',
+              onClick: () => classifyNow('all'),
+              disabled: autoState.status === 'running',
+              title: t('autoAgainAllHint'),
+            },
+            t('autoAgainAll'),
+          ),
           h(
             'button',
             {
@@ -2956,13 +3086,32 @@ function build(require) {
         h(Icon, { name }),
       );
 
-    const rows = order.map((id, position) => {
+    // The eye flips durable visibility. Clear the local fold override first so
+    // the group lands on its new default: collapsed when hidden, open when not.
+    const toggleGroupVisibility = (groupId) => {
+      setGroupFold((prev) => {
+        if (!Object.prototype.hasOwnProperty.call(prev, groupId)) return prev;
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      toggleGroupHidden(groupId);
+    };
+
+    const groupIds = new Set(groupsOf.map((group) => group.id));
+    const isGrouped = (id) => groupIds.has(prefs.assign[id] || '');
+    const ungrouped = order.filter((id) => !isGrouped(id));
+    const dropSlot = (key) => h('li', { key, className: 'dpc-dropSlot' }, t('dropHere'));
+
+    const pluginRow = (id, position) => {
       const label = labelOf.get(id) || id;
       const rawLabel = rawOf.get(id) || id;
       const groupId = prefs.assign[id] || '';
       const groupHidden = groupId !== '' && hiddenGroups.has(groupId);
       const isHidden = hiddenIds.has(id);
       const locked = id === PANEL_KEY;
+      const dropMode =
+        drag.overKind === 'row' && drag.overId === id && drag.overMode ? drag.overMode : 'false';
       return h(
         'li',
         {
@@ -2970,9 +3119,19 @@ function build(require) {
           className: 'dpc-row',
           'data-hidden': isHidden ? 'true' : 'false',
           'data-locked': locked ? 'true' : 'false',
-          ...dragProps(id, rowDrag, setRowDrag, moveBefore),
+          'data-dragging': drag.kind === 'row' && drag.from === id ? 'true' : 'false',
+          'data-drop': dropMode,
+          ...dragTarget('row', id, {
+            accept: ['row'],
+            mode: 'split',
+            onDrop: (from, kind, dropped) => dropRowOnRow(from, id, dropped === 'after'),
+          }),
         },
-        h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
+        h(
+          'span',
+          { className: 'dpc-grip', title: t('dragHint'), ...dragSource('row', id) },
+          h(Icon, { name: 'grip' }),
+        ),
         h('span', { className: 'dpc-pos' }, String(position + 1)),
         h(Glyph, { id }),
         h(
@@ -3015,16 +3174,6 @@ function build(require) {
               ? h('span', { className: 'dpc-tag' }, t('hiddenChip'))
               : null,
         ),
-        groupsOf.length === 0
-          ? null
-          : h(GroupPicker, {
-              id,
-              groups: groupsOf,
-              value: prefs.assign[id] || '',
-              label: t('groupLabel'),
-              ungrouped: t('ungrouped'),
-              onPick: (next) => setGroup(id, next),
-            }),
         iconButton('edit', t('renameIt'), () => startRename(id), false, {
           'aria-pressed': editing === id ? 'true' : 'false',
         }),
@@ -3036,41 +3185,102 @@ function build(require) {
           { 'aria-pressed': isHidden ? 'false' : 'true', className: 'dpc-icon dpc-eye' },
         ),
       );
-    });
+    };
 
-    const groupRow = (group, index) => {
+    const groupRow = (group) => {
       const members = order.filter((id) => (prefs.assign[id] || '') === group.id);
       const hideable = members.filter((id) => id !== PANEL_KEY);
       const groupHidden = hiddenGroups.has(group.id);
+      const collapsed = groupHidden ? groupFold[group.id] !== false : groupFold[group.id] === true;
+      const overHeader = drag.overKind === 'group' && drag.overId === group.id;
+      const overBody = drag.overKind === 'groupBody' && drag.overId === group.id;
+      const beforeGroup = overHeader && drag.overMode === 'before';
+      const appendToGroup = overBody || (overHeader && drag.overMode === 'append');
+      const headerDrop = dragTarget('group', group.id, {
+        accept: ['row', 'group'],
+        mode: (kind) => (kind === 'group' ? 'before' : 'append'),
+        onDrop: (from, kind) => {
+          if (kind === 'group') {
+            moveGroupBefore(from, group.id);
+            return;
+          }
+          dropRowOnGroup(from, group.id);
+          // Dropping onto a collapsed header should reveal the row that just
+          // landed; otherwise the action looks like it did nothing.
+          if (collapsed) setGroupFold((prev) => ({ ...prev, [group.id]: false }));
+        },
+      });
+      const bodyDrop = dragTarget('groupBody', group.id, {
+        accept: ['row'],
+        mode: 'append',
+        onDrop: (from) => dropRowOnGroup(from, group.id),
+      });
       return h(
         'li',
         {
           key: group.id,
-          className: 'dpc-group',
+          className: 'dpc-treeGroup',
           'data-hidden': groupHidden ? 'true' : 'false',
-          ...dragProps(group.id, groupDrag, setGroupDrag, moveGroupBefore),
+          'data-collapsed': collapsed ? 'true' : 'false',
+          'data-dragging': drag.kind === 'group' && drag.from === group.id ? 'true' : 'false',
+          'data-drop': beforeGroup ? 'before' : 'false',
         },
-        h('span', { className: 'dpc-grip', title: t('dragHint') }, h(Icon, { name: 'grip' })),
-        h('span', { className: 'dpc-groupDot', 'aria-hidden': true }),
-        h('input', {
-          className: 'dpc-input',
-          value: group.name,
-          'aria-label': t('groupName'),
-          onChange: (event) => renameGroup(group.id, event.target.value),
-        }),
         h(
-          'span',
-          { className: 'dpc-groupActions' },
-          countsOn ? h('span', { className: 'dpc-count' }, String(members.length)) : null,
-          iconButton('close', t('deleteGroup'), () => removeGroup(group.id), false),
+          'div',
+          { className: 'dpc-group dpc-groupHead', ...headerDrop },
+          h(
+            'span',
+            { className: 'dpc-grip', title: t('dragHint'), ...dragSource('group', group.id) },
+            h(Icon, { name: 'grip' }),
+          ),
           iconButton(
-            groupHidden ? 'eyeOff' : 'eye',
-            groupHidden ? t('showGroup') : t('hideGroup'),
-            () => toggleGroupHidden(group.id),
-            hideable.length === 0,
-            { 'aria-pressed': groupHidden ? 'false' : 'true', className: 'dpc-icon dpc-eye' },
+            'chevron',
+            collapsed ? t('expandGroup') : t('collapseGroup'),
+            () => setGroupFold((prev) => ({ ...prev, [group.id]: !collapsed })),
+            false,
+            {
+              className: 'dpc-icon dpc-treeCaret',
+              'aria-expanded': collapsed ? 'false' : 'true',
+            },
+          ),
+          h('span', { className: 'dpc-treeFolder', 'aria-hidden': true }, h(Icon, { name: 'folder' })),
+          h('input', {
+            className: 'dpc-input',
+            value: group.name,
+            'aria-label': t('groupName'),
+            onChange: (event) => renameGroup(group.id, event.target.value),
+          }),
+          h(
+            'span',
+            { className: 'dpc-groupActions' },
+            countsOn ? h('span', { className: 'dpc-count' }, String(members.length)) : null,
+            iconButton('close', t('deleteGroup'), () => removeGroup(group.id), false),
+            iconButton(
+              groupHidden ? 'eyeOff' : 'eye',
+              groupHidden ? t('showGroup') : t('hideGroup'),
+              () => toggleGroupVisibility(group.id),
+              hideable.length === 0,
+              { 'aria-pressed': groupHidden ? 'false' : 'true', className: 'dpc-icon dpc-eye' },
+            ),
           ),
         ),
+        collapsed
+          ? null
+          : h(
+              'ul',
+              {
+                className: 'dpc-treeChildren',
+                'data-empty': members.length === 0 ? 'true' : 'false',
+                ...bodyDrop,
+              },
+              [
+                ...members.map((id, position) => pluginRow(id, position)),
+                appendToGroup ? dropSlot('group-drop-' + group.id) : null,
+                members.length === 0 && !appendToGroup
+                  ? h('li', { key: 'empty', className: 'dpc-treeEmpty' }, t('treeGroupEmpty'))
+                  : null,
+              ],
+            ),
       );
     };
 
@@ -3185,34 +3395,63 @@ function build(require) {
         : null,
     );
 
-    const groups =
+    const pluginsPane = h(
+      'section',
+      { className: 'dpc-pane dpc-pane--plugins' },
+      h(
+        'div',
+        { className: 'dpc-paneHead' },
+        h('h2', { className: 'dpc-paneTitle' }, t('pluginsTitle')),
+        h('span', { className: 'dpc-count' }, String(ungrouped.length)),
+      ),
+      h('p', { className: 'dpc-paneHint' }, t('pluginsHint')),
+      h(
+        'ul',
+        {
+          className: 'dpc-list dpc-treeList',
+          ...dragTarget('plugins', '@plugins', {
+            accept: ['row'],
+            mode: 'append',
+            onDrop: (from) => dropRowOnPlugins(from),
+          }),
+        },
+        [
+          ...ungrouped.map((id, position) => pluginRow(id, position)),
+          drag.overKind === 'plugins' ? dropSlot('plugins-drop') : null,
+          ungrouped.length === 0 && drag.overKind !== 'plugins'
+            ? h('li', { key: 'empty', className: 'dpc-treeEmpty' }, t('treeEmpty'))
+            : null,
+        ],
+      ),
+      h('p', { className: 'dpc-paneFoot' }, t('ungroupHint')),
+    );
+
+    const groupsPane = h(
+      'section',
+      { className: 'dpc-pane dpc-pane--groups' },
+      h(
+        'div',
+        { className: 'dpc-paneHead' },
+        h('h2', { className: 'dpc-paneTitle' }, t('groupsTitle')),
+        h(
+          'div',
+          { className: 'dpc-paneActions' },
+          h('span', { className: 'dpc-count' }, String(groupsOf.length)),
+          h('button', { type: 'button', className: 'dpc-link', onClick: addGroup }, t('newGroup')),
+        ),
+      ),
+      h('p', { className: 'dpc-paneHint' }, t('groupsHint')),
       groupsOf.length === 0
         ? h(
-            'section',
-            { className: 'dpc-card dpc-empty' },
+            'div',
+            { className: 'dpc-empty dpc-empty--pane' },
             h('p', { className: 'dpc-emptyTitle' }, t('noGroups')),
-            h(
-              'button',
-              { type: 'button', className: 'dpc-link', onClick: addGroup },
-              t('newGroup'),
-            ),
+            h('button', { type: 'button', className: 'dpc-link', onClick: addGroup }, t('newGroup')),
           )
-        : h(
-            'section',
-            { className: 'dpc-section' },
-            h(
-              'div',
-              { className: 'dpc-sectionHead' },
-              h('h2', { className: 'dpc-sectionTitle' }, t('groupsTitle')),
-              h(
-                'button',
-                { type: 'button', className: 'dpc-link', onClick: addGroup },
-                t('newGroup'),
-              ),
-            ),
-            h('p', { className: 'dpc-note' }, t('groupsHint')),
-            h('ul', { className: 'dpc-groups' }, groupsOf.map(groupRow)),
-          );
+        : h('ul', { className: 'dpc-tree' }, groupsOf.map(groupRow)),
+    );
+
+    const tree = h('div', { className: 'dpc-treeGrid' }, pluginsPane, groupsPane);
 
     const diagnostics = engine ? engine.diagnostics() : null;
     const diagRow = (term, value, mono) =>
@@ -3256,8 +3495,6 @@ function build(require) {
         { className: inSection ? 'dpc-page dpc-page--flush' : 'dpc-page' },
         head,
         notice,
-        auto,
-        layout,
         order.length === 0
           ? h(
               'section',
@@ -3265,8 +3502,9 @@ function build(require) {
               h('p', { className: 'dpc-emptyTitle' }, t('empty')),
               h('button', { type: 'button', className: 'dpc-link', onClick: resetAll }, t('reset')),
             )
-          : h('ul', { className: 'dpc-list' }, rows),
-        groups,
+          : tree,
+        auto,
+        layout,
         diag,
       ),
     );
@@ -3298,6 +3536,8 @@ function build(require) {
     .dpc-count{margin:0;flex:none;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8));white-space:nowrap}
     .dpc-link{appearance:none;border:0;background:transparent;padding:4px 8px;border-radius:var(--dsw-radius-sm,6px);font:inherit;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-link:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-link--danger{color:var(--dsw-alias-state-error-primary,#b45454)}
+    .dpc-link--danger:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#b45454)}
     .dpc-link:disabled{opacity:.4;cursor:default}
 
     .dpc-card{padding:16px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06))}
@@ -3326,17 +3566,15 @@ function build(require) {
     .dpc-switch[aria-checked="true"] .dpc-switchKnob{transform:translateX(16px)}
 
     .dpc-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0}
-    .dpc-row{display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),opacity 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-row{position:relative;display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),opacity 120ms cubic-bezier(.16,1,.3,1)}
     .dpc-row:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.12));border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.28))}
     .dpc-row:focus-within{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32))}
     .dpc-row[data-dragging="true"],.dpc-group[data-dragging="true"]{opacity:.45}
     .dpc-row[data-over="true"],.dpc-group[data-over="true"]{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.10))}
-    .dpc-grip{cursor:grab}
-    .dpc-grip:active{cursor:grabbing}
     .dpc-row[data-hidden="true"]{opacity:.55}
     .dpc-row[data-hidden="true"] .dpc-name{color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
     .dpc-row[data-locked="true"]{background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10))}
-    .dpc-grip{display:inline-flex;flex:none;user-select:none;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.6));cursor:grab}
+    .dpc-grip{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;user-select:none;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9));cursor:grab}
     .dpc-grip:active{cursor:grabbing}
     .dpc-pos{flex:none;min-width:16px;font-family:var(--dsw-font-family-code,ui-monospace,monospace);font-size:11px;line-height:16px;text-align:right;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.7))}
     .dpc-glyph{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.9))}
@@ -3352,26 +3590,43 @@ function build(require) {
     .dpc-icon:disabled{opacity:.3;cursor:default}
     .dpc-ico{display:block}
 
-    .dpc-picker{position:relative;display:flex;flex:none}
-    .dpc-pickerBtn{appearance:none;display:inline-flex;align-items:center;gap:8px;height:24px;max-width:144px;padding:0 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-sm,6px);background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10));color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:16px;cursor:pointer;transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),color 120ms cubic-bezier(.16,1,.3,1)}
-    .dpc-pickerBtn:hover,.dpc-picker[data-open="true"] .dpc-pickerBtn{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.32));background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-primary,#8a8a8a)}
-    .dpc-pickerText{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .dpc-caret{flex:none;width:6px;height:6px;margin-top:-2px;border-right:1.2px solid currentColor;border-bottom:1.2px solid currentColor;transform:rotate(45deg);opacity:.7;transition:transform 120ms cubic-bezier(.16,1,.3,1)}
-    .dpc-picker[data-open="true"] .dpc-caret{margin-top:2px;transform:rotate(225deg)}
-    /* Opaque popover surface: --dsw-alias-bg-layer-2 is the host's own elevated
-       layer, so the menu never lets the card behind it show through. */
-    .dpc-menu{position:absolute;z-index:50;top:calc(100% + 4px);right:0;display:flex;flex-direction:column;gap:2px;min-width:144px;max-width:240px;padding:4px;background-color:var(--dsw-alias-bg-layer-2,var(--dsw-alias-bg-base,#1f1f1f));border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-md,8px);box-shadow:0 8px 24px rgba(0,0,0,.28)}
-    .dpc-option{appearance:none;border:0;padding:4px 8px;border-radius:var(--dsw-radius-xs,4px);background:transparent;color:var(--dsw-alias-label-secondary,rgba(127,127,127,.95));font:inherit;font-size:12px;line-height:16px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .dpc-option:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.18));color:var(--dsw-alias-label-primary,#8a8a8a)}
-    .dpc-option[aria-selected="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 16%,transparent);color:var(--dsw-alias-label-primary-bluish,#7f8fd8)}
+    /* Two-pane tree: ungrouped entries on the left, groups on the right. */
+    .dpc-treeGrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);align-items:stretch;gap:16px;min-width:0}
+    .dpc-pane{display:flex;flex-direction:column;min-width:0;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-lg,12px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.04))}
+    .dpc-paneHead{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:40px;padding:8px 14px;border-bottom:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.14))}
+    .dpc-paneTitle{margin:0;min-width:0;font-size:13px;font-weight:600;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
+    .dpc-paneActions{display:flex;flex:none;align-items:center;gap:8px}
+    .dpc-paneHint{margin:0;padding:8px 14px 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-paneFoot{margin:0;padding:8px 14px 10px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.7))}
+    .dpc-treeList{flex:1 1 auto;min-height:72px;padding:8px}
+    .dpc-tree{list-style:none;display:flex;flex:1 1 auto;flex-direction:column;gap:8px;min-width:0;margin:0;padding:8px}
+    .dpc-treeGroup{min-width:0}
+    .dpc-treeChildren{list-style:none;display:flex;flex-direction:column;gap:4px;min-width:0;margin:2px 0 0 14px;padding:4px 0 4px 10px;border-left:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.18));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-treeChildren[data-over="true"]{border-left-color:var(--dsw-alias-state-business-primary,#5865f2);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 7%,transparent)}
+    /* Insertion feedback: the line is the answer to "where will it land?",
+       so it spans the full row and sits in the 4px gap, not inside the border. */
+    .dpc-row[data-drop="before"]::before,.dpc-row[data-drop="after"]::after{content:'';position:absolute;left:0;right:0;height:2px;border-radius:2px;background:var(--dsw-alias-state-business-primary,#5865f2);pointer-events:none;z-index:3}
+    .dpc-row[data-drop="before"]::before{top:-3px}
+    .dpc-row[data-drop="after"]::after{bottom:-3px}
+    .dpc-treeGroup{position:relative}
+    .dpc-treeGroup[data-drop="before"]::before{content:'';position:absolute;left:0;right:0;top:-5px;height:2px;border-radius:2px;background:var(--dsw-alias-state-business-primary,#5865f2);pointer-events:none;z-index:3}
+    .dpc-treeGroup[data-dragging="true"] > .dpc-groupHead{opacity:.45}
+    .dpc-dropSlot{display:flex;align-items:center;justify-content:center;min-height:40px;margin:0;padding:8px 12px;border:1px dashed var(--dsw-alias-state-business-primary,#5865f2);border-radius:var(--dsw-radius-md,8px);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 7%,transparent);font-size:12px;line-height:18px;color:var(--dsw-alias-state-business-primary,#5865f2);text-align:center;list-style:none}
+    .dpc-treeList > .dpc-dropSlot{min-height:48px}
+    .dpc-treeFolder{display:inline-flex;flex:none;align-items:center;justify-content:center;width:16px;height:16px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-treeFolder .dpc-ico{width:16px;height:16px}
+    .dpc-treeCaret{width:20px;height:20px;margin-left:-2px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
+    .dpc-treeCaret .dpc-ico{width:16px;height:16px;transform:rotate(0);transition:transform 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-treeCaret[aria-expanded="true"] .dpc-ico{transform:rotate(90deg)}
+    .dpc-treeEmpty{display:flex;align-items:center;justify-content:center;min-height:56px;margin:2px 0 0 14px;padding:10px 12px;border:1px dashed var(--dsw-alias-border-l2,rgba(127,127,127,.24));border-radius:var(--dsw-radius-md,8px);font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.7));text-align:center}
+    .dpc-treeList > .dpc-treeEmpty{margin:0;min-height:72px}
+    .dpc-treeList[data-over="true"]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 7%,transparent)}
 
-    .dpc-section{display:flex;flex-direction:column;gap:8px;padding-top:16px;border-top:.5px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.16))}
-    .dpc-sectionHead{display:flex;align-items:center;justify-content:space-between;gap:16px}
-    .dpc-sectionTitle{margin:0;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-primary,#8a8a8a)}
-    .dpc-groups{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
     .dpc-group{display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px 6px 8px;border:.5px solid var(--dsw-alias-border-l2,rgba(127,127,127,.20));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06));transition:background-color 120ms cubic-bezier(.16,1,.3,1),border-color 120ms cubic-bezier(.16,1,.3,1),opacity 120ms cubic-bezier(.16,1,.3,1)}
+    .dpc-groupHead{min-width:0}
+    .dpc-groupHead[data-over="true"]{border-color:var(--dsw-alias-state-business-primary,#5865f2);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#5865f2) 9%,var(--dsw-alias-settings-card-fill,rgba(127,127,127,.06)))}
+    .dpc-groupHead .dpc-input{flex:0 1 auto;min-width:72px;max-width:260px;width:auto;field-sizing:content}
     .dpc-group:hover{border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.28))}
-    .dpc-groupDot{flex:none;width:8px;height:8px;border-radius:2px;background:var(--dsw-alias-state-business-primary,#5865f2);opacity:.8}
     .dpc-groupActions{display:flex;flex:none;align-items:center;gap:8px;margin-left:auto}
     .dpc-group .dpc-count{min-width:20px;text-align:right}
     .dpc-input{flex:0 1 auto;width:auto;min-width:2ch;max-width:320px;field-sizing:content;box-sizing:border-box;height:auto;padding:2px 8px;border:.5px solid var(--dsw-alias-border-l1,rgba(127,127,127,.12));border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary,#8a8a8a);font:inherit;font-size:12px;line-height:18px;transition:border-color 120ms cubic-bezier(.16,1,.3,1),background-color 120ms cubic-bezier(.16,1,.3,1)}
@@ -3379,6 +3634,7 @@ function build(require) {
     .dpc-input:focus{outline:none;border-color:var(--dsw-alias-border-l3,rgba(127,127,127,.36));background:var(--dsw-alias-bg-l2,rgba(127,127,127,.10))}
 
     .dpc-empty{display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;max-width:520px;margin:0 auto;padding:56px 32px 40px;text-align:center}
+    .dpc-empty--pane{max-width:none;margin:0;padding:40px 20px}
     .dpc-emptyTitle{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary,rgba(127,127,127,.8))}
 
     .dpc-diag{padding-top:16px;border-top:.5px solid var(--dsw-alias-separator-primary,rgba(127,127,127,.16))}
@@ -3440,6 +3696,12 @@ function build(require) {
       .dpc-tags{order:8}
       .dpc-bridgeFrom{display:none}
     }
+    /* The settings column can be narrower than the page: stack the two panes
+       before the tree starts competing with the dialog's own gutter. */
+    @container (max-width:720px){
+      .dpc-treeGrid{grid-template-columns:1fr}
+      .dpc-treeList{min-height:56px}
+    }
     /* The settings column is narrower than the page column: drop what is only
        nice-to-have there instead of letting the row overflow. */
     @container (max-width:640px){
@@ -3447,10 +3709,12 @@ function build(require) {
       .dpc-pos{display:none}
       .dpc-key{display:none}
       .dpc-tags{display:none}
+      .dpc-autoMain{flex-wrap:wrap}
+      .dpc-autoActions{width:100%;justify-content:flex-end}
     }
     @media (prefers-reduced-motion:reduce){
       .dpc-page{animation:none}
-      .dpc-row,.dpc-group,.dpc-icon,.dpc-link,.dpc-switch,.dpc-switchKnob,.dpc-pickerBtn,.dpc-caret,.dpc-input,.dpc-ghost,.dpc-primary{transition:none}
+      .dpc-row,.dpc-group,.dpc-treeChildren,.dpc-treeCaret .dpc-ico,.dpc-icon,.dpc-link,.dpc-switch,.dpc-switchKnob,.dpc-input,.dpc-ghost,.dpc-primary{transition:none}
     }
   `;
 

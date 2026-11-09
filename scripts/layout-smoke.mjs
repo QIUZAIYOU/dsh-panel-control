@@ -40,6 +40,24 @@ for (const marker of [
   'hiddenIdsOf',
   'toggleGroupHidden',
   'groupHiddenChip',
+  'dpc-treeGrid',
+  'dpc-pane--plugins',
+  'dpc-pane--groups',
+  'pluginsTitle',
+  'treeGroupEmpty',
+  'ungroupHint',
+  'moveRowToGroup',
+  'dragSource',
+  'dragTarget',
+  'dropRowOnGroup',
+  'dropSlot',
+  'setDragImage',
+  'groupFold',
+  'dpc-treeCaret',
+  'data-collapsed',
+  'toggleGroupVisibility',
+  'autoSkip',
+  'autoSkipSet',
 ]) {
   expect(client.includes(marker), 'client.js lost ' + marker);
 }
@@ -73,8 +91,138 @@ expect(
   'the sidebar separator count is not behind the same switch',
 );
 expect(/\.dpc-nameTag\{[^}]*pointer-events:none/.test(client), 'the original-name tag can intercept clicks');
-expect(/\.dpc-menu\{[^}]*background-color:var\(--dsw-alias-bg-layer-2/.test(client), 'the group menu lost its opaque base');
 expect(pkg.scripts && String(pkg.scripts.check).includes('names-smoke'), 'npm run check no longer runs the names gate');
+
+// The two-pane tree replaces the separate list and group picker. The left pane
+// is only the ungrouped set; all grouping happens by dropping a row on the right.
+expect(
+  client.includes("className: 'dpc-treeGrid'") &&
+    client.includes("className: 'dpc-pane dpc-pane--plugins'") &&
+    client.includes("className: 'dpc-pane dpc-pane--groups'"),
+  'the settings page lost its two-pane tree',
+);
+expect(
+  client.includes('if (id !== PANEL_KEY) hiddenIds.add(id);') &&
+    client.includes('const keep = loose.filter((id) => id === PANEL_KEY);') &&
+    client.includes("blocks.push({ id: '', name: '', ids: keep });"),
+  'ungrouped rows are no longer staged away from the sidebar',
+);
+expect(
+  client.includes('function moveRowToGroup(rowId, groupId, beforeId)') &&
+    client.includes('const before = beforeId && beforeId !== rowId ? order.indexOf(beforeId) : -1') &&
+    client.includes('const groupId = assign[targetId] || \'\'') &&
+    client.includes('moveRowToGroup(fromId, groupId, beforeId)'),
+  'row drag no longer moves order and assign in one commit',
+);
+expect(
+  client.includes("...dragTarget('row', id") &&
+    client.includes("...dragTarget('plugins', '@plugins'") &&
+    client.includes('if (!source || !accept.includes(source.kind)) return;') &&
+    client.includes('event.stopPropagation();'),
+  'tree drops lost their source guard or nested-event isolation',
+);
+expect(
+  client.includes("drag.kind === 'row' && drag.from === id ? 'true' : 'false'") &&
+    client.includes("drag.kind === 'group' && drag.from === group.id ? 'true' : 'false'"),
+  'dragged tree rows no longer mark their source',
+);
+expect(
+  client.includes("mode: 'split'") &&
+    client.includes('event.clientY > box.top + box.height / 2') &&
+    client.includes("onDrop: (from, kind, dropped) => dropRowOnRow(from, id, dropped === 'after')"),
+  'the row target no longer picks an insertion side from the pointer',
+);
+expect(
+  client.includes('event.dataTransfer.setDragImage(ghost, 20, 18)') &&
+    client.includes("node.closest('li.dpc-row')") &&
+    client.includes("group.querySelector('.dpc-groupHead')"),
+  'the drag ghost is not a full row/group header',
+);
+expect(
+  client.includes("'data-drop': dropMode") &&
+    client.includes("'data-drop': beforeGroup ? 'before' : 'false'") &&
+    client.includes("dropSlot('group-drop-' + group.id)") &&
+    client.includes("dropSlot('plugins-drop')"),
+  'the tree no longer renders a drop line or an append slot',
+);
+expect(
+  /\.dpc-row\[data-drop="before"\]::before/.test(client) &&
+    /\.dpc-row\[data-drop="after"\]::after/.test(client) &&
+    /\.dpc-dropSlot\{[^}]*border:1px dashed/.test(client),
+  'the insertion line or append slot lost its styling',
+);
+expect(
+  !client.includes('GroupPicker') && !client.includes('dpc-picker') && !client.includes('dpc-menu'),
+  'the old group picker survived the tree refactor',
+);
+expect(
+  /\.dpc-treeGrid\{[^}]*grid-template-columns:minmax\(0,1fr\) minmax\(0,1\.15fr\)/.test(client) &&
+    /@container \(max-width:720px\)\{[^}]*\.dpc-treeGrid\{grid-template-columns:1fr\}/.test(client),
+  'the tree lost its desktop columns or its narrow-dialog stacking rule',
+);
+expect(
+  client.includes("props.name === 'grip'") &&
+    client.includes("h('circle', { key: 'g' + index, cx, cy, r: 1.6, fill: 'currentColor' })") &&
+    /\.dpc-grip\{[^}]*width:16px[^}]*height:16px/.test(client),
+  'the drag handle collapsed back into invisible sub-pixel dots',
+);
+expect(
+  /\.dpc-groupHead \.dpc-input\{[^}]*flex:0 1 auto[^}]*max-width:260px[^}]*field-sizing:content/.test(client),
+  'the group name input stretches like a form field again',
+);
+expect(
+  client.includes('const [groupFold, setGroupFold] = React.useState({});') &&
+    client.includes("const collapsed = groupHidden ? groupFold[group.id] !== false : groupFold[group.id] === true;") &&
+    client.includes("'data-collapsed': collapsed ? 'true' : 'false'") &&
+    client.includes("collapsed ? t('expandGroup') : t('collapseGroup')"),
+  'a hidden group no longer folds to its collapsed default',
+);
+expect(
+  /collapsed\s*\?\s*null\s*:\s*h\(/.test(client) &&
+    client.includes("if (collapsed) setGroupFold((prev) => ({ ...prev, [group.id]: false }));"),
+  'a collapsed group still mounts its children, or a drop does not open it',
+);
+// Auto filing only owns entries the user has never positioned. Every drag and a
+// group deletion writes a manual lock, and an old file infers it from autoFiled.
+expect(
+  client.includes('out.autoSkip = uniqueIds(raw.autoSkip, LIMITS.autoSkip);') &&
+    client.includes('(prefs.autoSkip || []).length > 0 ||') &&
+    client.includes('function autoSkipSet(prefs = prefsNow())') &&
+    client.includes('if (!groupId || !groups.has(groupId)) skip.add(id);'),
+  'manual classification locks lost their persistence or legacy inference',
+);
+expect(
+  client.includes('autoSkip.add(rowId);') &&
+    client.includes('autoSkip.add(panelId);') &&
+    client.includes('const skip = autoSkipSet(prefs);') &&
+    client.includes('known.has(id) && (all || !skip.has(id))') &&
+    client.includes('const candidates = all ? entries : entries.filter((entry) => !skip.has(entry.id));') &&
+    client.includes('entries: candidates.map((entry) => ({ id: entry.id, label: entry.label })),') &&
+    client.includes('!filed.has(entry.id) && !skip.has(entry.id)') &&
+    client.includes('prefs.autoFiled, prefs.autoSkip'),
+  'manual entries can still reach or survive a classification run',
+);
+expect(
+  client.includes("onClick: () => classifyNow('new')") &&
+    client.includes("onClick: () => classifyNow('all')") &&
+    client.includes("className: 'dpc-link dpc-link--danger'") &&
+    client.includes('autoAgainAllHint') &&
+    client.includes('.dpc-link--danger{color:var(--dsw-alias-state-error-primary,#b45454)}') &&
+    client.includes('.dpc-autoActions{width:100%;justify-content:flex-end}'),
+  'the two classify modes are missing from the UI or its narrow layout',
+);
+expect(
+  client.includes('const toggleGroupVisibility = (groupId) => {') &&
+    client.includes('delete next[groupId];') &&
+    client.includes('toggleGroupHidden(groupId);') &&
+    client.includes('() => toggleGroupVisibility(group.id)'),
+  'the eye no longer resets the local fold state before toggling visibility',
+);
+expect(
+  /\.dpc-treeCaret\[aria-expanded="true"\] \.dpc-ico\{transform:rotate\(90deg\)\}/.test(client),
+  'the caret does not point down when the group is open',
+);
+
 
 // A group switch is a second, independent hidden axis: the engine must union it
 // with the per-row list, and "show all" must clear both.
