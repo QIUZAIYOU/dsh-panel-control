@@ -1,6 +1,6 @@
 {
   "name": "dsh-panel-control",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "type": "module",
   "engines": {
     "dsh": ">=0.2.1-rc.3"
