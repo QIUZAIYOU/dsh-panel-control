@@ -234,7 +234,10 @@ async function run(localPrefs) {
   const app = makeCtx();
   const mod = install(makeWindow(localPrefs), app.registries);
   mod.apply(app.ctx);
-  await sleep(260);
+  // The bridge sync is debounced (120 ms) and the engine coalesces its passes
+  // (100 ms), so the store needs a beat longer than the panellist rows to see
+  // the bridged entries.
+  await sleep(500);
   const rows = app.registries.get('sidebar.panellist') || [];
   const mains = app.registries.get('main') || [];
   const labelOf = (options) => (typeof options.label === 'function' ? options.label() : options.label);
@@ -245,6 +248,11 @@ async function run(localPrefs) {
     mainRows: mains,
     rows,
     registries: app.registries,
+    // What the settings page actually renders from: the engine copies every
+    // pass's panellist entries into the shared store before touching the DOM.
+    storeEntries: mod.testables.store.state.entries.map((entry) => entry.id),
+    prefs: mod.testables.store.state.prefs,
+    normalize: mod.testables.normalize,
   };
 }
 
@@ -272,7 +280,8 @@ async function runLate() {
   );
   await sleep(420);
   const after = (app.registries.get('sidebar.panellist') || []).map((row) => row.options.id);
-  return { before, after };
+  const storeAfter = mod.testables.store.state.entries.map((entry) => entry.id);
+  return { before, after, storeAfter };
 }
 
 const late = await runLate();
@@ -281,11 +290,31 @@ check(
   late.after.includes('dpc-bridge-plan-mode') && late.after.includes('dpc-bridge-bili'),
   'late-registered settings sections were not bridged',
 );
+check(
+  late.storeAfter.includes('dpc-bridge-plan-mode') && late.storeAfter.includes('dpc-bridge-bili'),
+  'late-registered settings sections never reached the left-pane entry list',
+);
 
 const on = await run(undefined);
 check(on.ids.includes('dpc-bridge-plan-mode'), 'missing bridge row for dsh-flash-presets');
 check(on.ids.includes('dpc-bridge-bili'), 'missing bridge row for billion-context');
 check(on.ids.includes('dpc-bridge-composer-rewind-settings'), 'missing bridge row for dsh-composer-rewind');
+
+// The settings page's left pane is fed by the store, not by the bridge map: a
+// bridged row is only visible there once the engine's pass has read the slot.
+const leftPane = (prefs, ids) => {
+  const order = on.normalize(
+    prefs,
+    ids.map((id) => ({ id })),
+  );
+  const groups = new Set((prefs.groups || []).map((group) => group.id));
+  return order.filter((id) => !groups.has((prefs.assign || {})[id] || ''));
+};
+const paneIds = leftPane(on.prefs, on.storeEntries);
+for (const id of ['dpc-bridge-plan-mode', 'dpc-bridge-bili', 'dpc-bridge-composer-rewind-settings']) {
+  check(on.storeEntries.includes(id), 'bridged row missing from the store entries (left pane source): ' + id);
+  check(paneIds.includes(id), 'bridged row was staged out of the left pane: ' + id);
+}
 check(!on.ids.includes('dpc-bridge-market'), 'bridged dshmarket even though it has a panel');
 check(!on.ids.includes('dpc-bridge-general'), 'bridged a core settings section');
 check(!on.ids.includes('dpc-bridge-account'), 'bridged a core settings section');

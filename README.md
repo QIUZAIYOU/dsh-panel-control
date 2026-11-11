@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的侧栏入口会越装越多。这个插件给顶部那一列加上排序、隐藏和分组，下面的会话和工作区就不会被挤掉。
 
-![界面预览：左右树与自动分类](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.3/assets/screenshot-panel.png)
+![界面预览：左右树与自动分类](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.4/assets/screenshot-panel.png)
 
 *界面预览 · 示例数据*
 
@@ -21,7 +21,7 @@ DeepSeek Harness 的侧栏入口会越装越多。这个插件给顶部那一列
 
 侧栏分组效果：
 
-![侧栏分组效果](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.3/assets/screenshot-sidebar-groups.png)
+![侧栏分组效果](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.4/assets/screenshot-sidebar-groups.png)
 
 设置页从上到下是：标题与提示、自动分类、分组树、侧栏布局、诊断。侧栏导航里的「面板管理」和 **设置 → 面板管理** 打开同一套界面。
 
@@ -33,7 +33,7 @@ DeepSeek Harness 的侧栏入口会越装越多。这个插件给顶部那一列
 
 ```bash
 cd C:/Users/<you>/.dsh/profiles/desktop
-npm install dsh-panel-control@0.10.3
+npm install dsh-panel-control@0.10.4
 ```
 
 把包名加进同一目录 `package.json` 的 `dsh.profile.bundles`：

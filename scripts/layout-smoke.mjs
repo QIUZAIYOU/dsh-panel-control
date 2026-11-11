@@ -76,6 +76,21 @@ expect(
 );
 expect(/\.dpc-bridgeBar\{[^}]*min-height:40px/.test(client), 'the bridge bar lost its 40px row height');
 
+// "Timely" for a newly installed settings-only plugin is four signals, not one:
+// the panel registry re-runs the engine and the bridge, the section registry
+// re-runs the bridge, the boot ladder catches late registrations, and the slot
+// declaration re-installs the watch. Losing any of them delays the row to a
+// reload, which is the failure mode this gate exists to catch.
+expect(client.includes('const BRIDGE_RETRY_MS = [350, 900, 2000, 4200, 8000, 15000];'), 'the boot rescan ladder lost its cadence');
+expect(client.includes('const dispose = slots.subscribe(SLOT_SETTINGS, () => scheduleBridgeSync());'), 'a late settings section no longer triggers a bridge sync');
+const panelWatchAt = client.indexOf('ctx.slots.subscribe(SLOT_PANELS, () => {');
+const panelWatch = panelWatchAt < 0 ? '' : client.slice(panelWatchAt, panelWatchAt + 220);
+expect(panelWatch.includes('engineRef.schedule()') && panelWatch.includes('scheduleBridgeSync()'), 'the panel registry no longer refreshes the engine and the bridge');
+// The last such call is the declaration callback; the earlier one registers our own page.
+const settingsInjectAt = client.lastIndexOf('ctx.slots.inject(SLOT_SETTINGS, () => {');
+const settingsInject = settingsInjectAt < 0 ? '' : client.slice(settingsInjectAt, settingsInjectAt + 220);
+expect(settingsInject.includes('unwatchSettings();') && settingsInject.includes('watchSettings();') && settingsInject.includes('kickBridge();'), 'the settings watch is no longer re-installed on declaration');
+
 // A renamed row keeps its host label addressable while the visible title changes;
 // the original-name tag is opt-out, and the group menu must not sit on transparency.
 expect(client.includes('out.tags = raw.tags !== false'), 'the original-name tag switch is not persisted');
