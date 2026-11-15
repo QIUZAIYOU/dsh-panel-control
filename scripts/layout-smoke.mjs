@@ -20,6 +20,10 @@ const expect = (ok, message) => {
 for (const marker of [
   'data-dpc-list',
   'data-dpc-unbounded',
+  'data-dpc-native',
+  'data-dpc-row',
+  'rowsOf',
+  'layoutGuardNative',
   'data-dpc-region',
   '--dpc-panellist-max',
   'data-dpc-group-id',
@@ -302,6 +306,39 @@ expect(pkg.scripts && String(pkg.scripts.check).includes('bridge-smoke'), 'npm r
 expect(/\[data-dpc-list\]\{[^}]*overflow-y:auto/.test(client), 'the panel list is not scrollable');
 expect(/\[data-dpc-list\]\{[^}]*max-height:max\(120px,var\(--dpc-panellist-max,45vh\)\)/.test(client), 'the panel list lost its height cap');
 expect(/\[data-dpc-region\]\{[^}]*min-height/.test(client), 'the region below the list lost its floor');
+
+// DSH 0.2.2-rc.1 wraps every row and scrolls the list itself. The engine must
+// lay the wrappers out, find the list without direct button children, and drop
+// the guard when the host already scrolls.
+expect(
+  client.includes("if (candidate.querySelector('button'))") &&
+    !client.includes("candidate.querySelector(':scope > button')"),
+  'the list probe still needs a direct button child',
+);
+expect(
+  client.includes('const rowsOf = (list) => {') &&
+    client.includes('data-dpc-row') &&
+    client.includes("if (!node.hasAttribute('data-dpc-row')) continue;"),
+  'the engine no longer resolves or cleans up wrapper rows',
+);
+expect(
+  client.includes("while (node && node.parentElement !== list) node = node.parentElement;"),
+  'a row button is no longer walked up to the list child',
+);
+expect(
+  client.includes('const nativeScroller = (list) => {') &&
+    client.includes("overflow === 'auto' || overflow === 'scroll'") &&
+    client.includes("diag.guard = 'native'"),
+  'the guard no longer defers to a host scroll container',
+);
+expect(/\[data-dpc-list\]\[data-dpc-native\]\{[^}]*max-height:none/.test(client), 'the native rule does not clear the cap');
+expect(/\[data-dpc-list\]>\[data-dpc-row\]\{[^}]*flex:none/.test(client), 'wrapper rows lost their flex guard');
+expect(!client.includes('[data-dpc-list]>button'), 'the old direct-button rule survived the wrapper change');
+expect(
+  client.includes("t('layoutGuardNative')") &&
+    client.includes('disabled: !layoutOn || guardNative'),
+  'the guard controls do not report the native scroller',
+);
 
 expect(/\.dpc-layoutRow:first-of-type\{[^}]*border-top:0/.test(client), 'the first layout row has a hairline touching the card hint');
 expect(/\.dpc-layout > \.dpc-note\{[^}]*margin:6px 0 10px/.test(client), 'the card hint lost its gap above the rows');

@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.10.4';
+  const BUILD_STAMP = 'dsh-panel-control/0.10.5';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -397,6 +397,10 @@ function build(require) {
     },
     layoutGuard: { zh: '高度兜底', en: 'Height guard' },
     layoutGuardHint: { zh: '导航区超过上限后在原地滚动。', en: 'Scroll inside the list once it passes the cap.' },
+    layoutGuardNative: {
+      zh: '当前侧栏自带滚动，兜底已自动停用。',
+      en: 'This sidebar scrolls on its own, so the guard is off.',
+    },
     layoutCollapse: { zh: '分组可折叠', en: 'Collapsible groups' },
     layoutCollapseHint: { zh: '点分组标题收起该组，标题与数量仍保留。', en: 'Click a group title to fold it; the title and count stay.' },
     layoutMax: { zh: '高度上限', en: 'Height cap' },
@@ -1631,22 +1635,50 @@ function build(require) {
     };
 
     /**
+     * One host row and the button that identifies it.
+     *
+     * Since DSH 0.2.2 the navigation list holds a wrapper per panel
+     * (`div.panelEntry` around the row button, plus an unpin button when the
+     * sidebar is wide), so the element that carries `order`/`display` is the
+     * wrapper, not the button. Older builds put the button in the list
+     * directly, which is why every row is resolved through its parent instead
+     * of being assumed to be a button.
+     */
+    const rowsOf = (list) => {
+      const out = [];
+      if (!list || !list.children) return out;
+      for (const child of Array.from(list.children)) {
+        if (child.hasAttribute('data-dpc-sep')) continue;
+        const button = child.tagName === 'BUTTON' ? child : child.querySelector('button');
+        if (button) out.push({ row: child, button });
+      }
+      return out;
+    };
+
+    /** The list child that owns one row button: the wrapper, or the button itself. */
+    const rowOf = (button, list) => {
+      let node = button;
+      while (node && node.parentElement !== list) node = node.parentElement;
+      return node && node.parentElement === list ? node : null;
+    };
+
+    /**
      * One line per real pass naming what the list holds right now.
      *
      * A row a sibling plugin registered and the page then lost is invisible from
      * here: the registration is gone before the DOM is touched. The dump records
-     * both sides (slot entries and buttons), so the side that lost the row says
+     * both sides (slot entries and rows), so the side that lost the row says
      * which half dropped it.
      */
     let dumpedKeys = '';
     const dumpPanellist = (plan, list) => {
       try {
-        const buttons = Array.from(list.querySelectorAll(':scope > button'));
-        const rows = buttons.map((button) => {
+        const rows = rowsOf(list).map(({ row, button }) => {
           const label = button.getAttribute('aria-label') || '';
-          const order = button.style.order || '';
-          const shown = button.style.display === 'none' ? 'hidden' : 'shown';
-          return `${label}|${shown}|${order}`;
+          const order = row.style.order || '';
+          const shown = row.style.display === 'none' ? 'hidden' : 'shown';
+          const group = row.getAttribute('data-dpc-group') || '';
+          return `${label}|${shown}|${order}|${group}`;
         });
         const key = rows.join(';');
         if (key === dumpedKeys) return;
@@ -1654,6 +1686,8 @@ function build(require) {
         reportHost({
           kind: 'panellist',
           listClass: diag.listClass,
+          guard: diag.guard,
+          seps: list.querySelectorAll('[data-dpc-sep]').length,
           entries: plan.entries.map((entry) => `${entry.id}@${entry.order}`).join(','),
           hidden: Array.from(plan.hiddenIds).join(','),
           rows: rows.join(' · ').slice(0, 1500),
@@ -1664,11 +1698,13 @@ function build(require) {
     };
 
     const findList = (entries) => {
-      if (listEl && listEl.isConnected && listEl.querySelector(':scope > button')) return listEl;
+      // A cached list is only good while it still holds rows: the host remounts
+      // the sidebar, and a wrapper row must never stand in for the list itself.
+      if (listEl && listEl.isConnected && rowsOf(listEl).length > 0) return listEl;
       listEl = null;
       try {
         for (const candidate of document.querySelectorAll('[class*="panelList"]')) {
-          if (candidate.querySelector(':scope > button')) {
+          if (candidate.querySelector('button')) {
             listEl = candidate;
             return listEl;
           }
@@ -1676,6 +1712,10 @@ function build(require) {
       } catch {
         /* fall through to the label probe */
       }
+      // A renamed class hook: climb from a labelled row until the container
+      // holds two of our rows. Stopping at the first parent would pick a
+      // single panel entry — the exact mis-detection this replaces.
+      const found = [];
       for (const entry of entries) {
         if (!entry.label) continue;
         let button = null;
@@ -1687,11 +1727,17 @@ function build(require) {
         } catch {
           button = null;
         }
-        const parent = button && button.parentElement;
-        if (parent && parent.querySelectorAll(':scope > button').length > 1) {
-          listEl = parent;
+        if (button) found.push(button);
+      }
+      if (found.length === 0) return null;
+      let node = found[0].parentElement;
+      const enough = Math.min(2, found.length);
+      while (node) {
+        if (rowsOf(node).length >= enough) {
+          listEl = node;
           return listEl;
         }
+        node = node.parentElement;
       }
       return null;
     };
@@ -1753,25 +1799,62 @@ function build(require) {
      * names.
      */
     let regionEl = null;
+
+    /**
+     * Whether the host already scrolls the list.
+     *
+     * DSH 0.2.2-rc.1 put the panel list and the session region in one
+     * `scrollArea{overflow-y:auto}`, which is the fix this plugin used to
+     * supply. The guard then only adds a second scrollbar inside the first, so
+     * it steps aside whenever the parent reports its own scroller.
+     */
+    const nativeScroller = (list) => {
+      const parent = list.parentElement;
+      if (!parent || typeof getComputedStyle !== 'function') return false;
+      try {
+        const overflow = getComputedStyle(parent).overflowY;
+        return overflow === 'auto' || overflow === 'scroll';
+      } catch {
+        return false;
+      }
+    };
+
     const tagLayout = (list, prefs) => {
       try {
         const off = prefs.guard === false;
-        if (off) {
-          list.removeAttribute('data-dpc-list');
-          list.style.removeProperty('--dpc-panellist-max');
+        const native = !off && nativeScroller(list);
+        const dropCap = () => {
+          try {
+            list.style.removeProperty('--dpc-panellist-max');
+          } catch {
+            /* a fake style object in the gate */
+          }
+        };
+        if (off || native) {
+          dropCap();
           list.removeAttribute('data-dpc-unbounded');
+          list.removeAttribute('data-dpc-native');
           if (regionEl) regionEl.removeAttribute('data-dpc-region');
           regionEl = null;
-          diag.guard = false;
+          if (off) {
+            list.removeAttribute('data-dpc-list');
+            diag.guard = 'off';
+          } else {
+            list.setAttribute('data-dpc-list', '');
+            list.setAttribute('data-dpc-native', '');
+            diag.guard = 'native';
+          }
+          diag.panelMax = 0;
           return;
         }
+        list.removeAttribute('data-dpc-native');
         list.setAttribute('data-dpc-list', '');
         const max = Number(prefs.panelMax) || 0;
         if (max > 0) {
           list.style.setProperty('--dpc-panellist-max', max + 'vh');
           list.removeAttribute('data-dpc-unbounded');
         } else {
-          list.style.removeProperty('--dpc-panellist-max');
+          dropCap();
           list.setAttribute('data-dpc-unbounded', '');
         }
         const parent = list.parentElement;
@@ -1790,6 +1873,7 @@ function build(require) {
         if (region) region.setAttribute('data-dpc-region', '');
         regionEl = region;
         diag.panelMax = max;
+        diag.guard = 'on';
       } catch {
         /* a different list shape: leave the sidebar alone this pass */
       }
@@ -1918,7 +2002,6 @@ function build(require) {
       }
       diag.listClass = typeof list.className === 'string' ? list.className.split(/\s+/)[0] || '' : '';
 
-      diag.guard = plan.prefs.guard !== false;
       diag.panelMax = plan.prefs.panelMax;
       // Run on every pass, before the signature shortcut: changing the height
       // cap or the guard must reach the DOM even when the rows did not move.
@@ -1931,8 +2014,19 @@ function build(require) {
 
       // Renames are display state, like the height cap: apply them before the
       // signature shortcut so a pass that only renames still reaches the DOM.
-      const buttons = Array.from(list.querySelectorAll(':scope > button'));
+      const rows = rowsOf(list);
+      const buttons = rows.map((row) => row.button);
       const map = mapButtons(plan.entries, buttons);
+      // The wrapper is what the host list lays out, so every layout write goes
+      // there; the button keeps carrying the label the mapping matches on.
+      const rowById = new Map();
+      const managedRows = new Set();
+      for (const [id, button] of map) {
+        const row = rowOf(button, list) || button;
+        rowById.set(id, row);
+        managedRows.add(row);
+        row.setAttribute('data-dpc-row', '');
+      }
       applyNames(map, plan, wide);
       // Package names label renamed rows; the first pass that knows the entries
       // asks the Host once, and later passes are deduplicated by the id set.
@@ -1954,25 +2048,33 @@ function build(require) {
         return;
       }
       signature = nextSignature;
-      dumpPanellist(plan, list);
 
       pause();
       try {
         for (const node of Array.from(list.querySelectorAll('[data-dpc-sep]'))) node.remove();
 
-        const managed = new Set(map.values());
-
-        // Anything we do not manage (the "More" launcher and its wrapper) keeps
-        // the end of the list instead of sorting between our rows on `order: 0`.
+        // Anything we do not manage keeps the end of the list instead of
+        // sorting between our rows on `order: 0`. The host's "More" launcher
+        // comes last; a panel row we could not map stays ahead of it so it
+        // remains reachable.
         for (const child of Array.from(list.children)) {
-          if (child.tagName === 'BUTTON') continue;
           if (child.hasAttribute('data-dpc-sep')) continue;
-          child.style.order = String(ORDER_UNMANAGED);
+          if (managedRows.has(child)) continue;
+          let launcher = null;
+          try {
+            launcher = child.querySelector('button[aria-haspopup="menu"]');
+          } catch {
+            launcher = null;
+          }
+          if (!launcher && child.tagName === 'BUTTON' && child.getAttribute('aria-haspopup') === 'menu') {
+            launcher = child;
+          }
+          child.style.order = String(launcher ? ORDER_UNMANAGED : ORDER_UNMANAGED_TAIL);
         }
 
         let position = ORDER_START;
         for (const block of plan.blocks) {
-          const inBlock = block.ids.filter((id) => map.has(id));
+          const inBlock = block.ids.filter((id) => rowById.has(id));
           const shown = inBlock.filter((id) => !plan.hiddenIds.has(id));
           if (shown.length === 0) continue;
           const foldedHere = block.id !== '' && folded.has(block.id);
@@ -1995,22 +2097,22 @@ function build(require) {
           }
           if (foldedHere) continue;
           for (const id of shown) {
-            const button = map.get(id);
-            button.style.order = String(position);
-            button.style.display = '';
-            button.removeAttribute('data-dpc-hidden');
-            button.removeAttribute('data-dpc-collapsed');
-            button.setAttribute('data-dpc-group', block.name || '');
+            const row = rowById.get(id);
+            row.style.order = String(position);
+            row.style.display = '';
+            row.removeAttribute('data-dpc-hidden');
+            row.removeAttribute('data-dpc-collapsed');
+            row.setAttribute('data-dpc-group', block.name || '');
             position += ORDER_STEP;
           }
         }
 
         for (const id of plan.hiddenIds) {
-          const button = map.get(id);
-          if (!button) continue;
-          button.style.display = 'none';
-          button.setAttribute('data-dpc-hidden', '');
-          button.removeAttribute('data-dpc-collapsed');
+          const row = rowById.get(id);
+          if (!row) continue;
+          row.style.display = 'none';
+          row.setAttribute('data-dpc-hidden', '');
+          row.removeAttribute('data-dpc-collapsed');
         }
 
         // Folding is a separate axis from "hidden in this plugin": a folded row
@@ -2018,20 +2120,17 @@ function build(require) {
         for (const block of plan.blocks) {
           if (block.id === '' || !folded.has(block.id)) continue;
           for (const id of block.ids) {
-            const button = map.get(id);
-            if (!button || plan.hiddenIds.has(id)) continue;
-            button.style.display = 'none';
-            button.setAttribute('data-dpc-collapsed', '');
+            const row = rowById.get(id);
+            if (!row || plan.hiddenIds.has(id)) continue;
+            row.style.display = 'none';
+            row.setAttribute('data-dpc-collapsed', '');
           }
         }
 
-        // A row we could not map is left in place, but kept after every managed row.
-        for (const button of buttons) {
-          if (managed.has(button)) continue;
-          button.style.order = String(ORDER_UNMANAGED_TAIL);
-        }
-
-        diag.rows = buttons.length;
+        // Read the list back after the pass wrote to it: a dump taken before
+        // the ordering only shows the host's own render.
+        dumpPanellist(plan, list);
+        diag.rows = rows.length;
         diag.mapped = map.size;
         diag.error = null;
       } catch (error) {
@@ -2101,9 +2200,16 @@ function build(require) {
       }
       if (listEl) {
         for (const node of Array.from(listEl.querySelectorAll('[data-dpc-sep]'))) node.remove();
-        for (const node of Array.from(listEl.querySelectorAll('[data-dpc-panel]'))) {
-          node.style.removeProperty('order');
-          node.style.removeProperty('display');
+        // The wrapper rows are ours only by attribute: clear the layout writes
+        // and hand the host its own list back untouched.
+        for (const node of Array.from(listEl.children)) {
+          if (!node.hasAttribute('data-dpc-row')) continue;
+          node.style.order = '';
+          node.style.display = '';
+          node.removeAttribute('data-dpc-row');
+          node.removeAttribute('data-dpc-group');
+          node.removeAttribute('data-dpc-hidden');
+          node.removeAttribute('data-dpc-collapsed');
         }
       }
       // Hand the host rows back exactly as they were: the original label, the
@@ -2121,7 +2227,12 @@ function build(require) {
       for (const node of Array.from(document.querySelectorAll('[data-dpc-list]'))) {
         node.removeAttribute('data-dpc-list');
         node.removeAttribute('data-dpc-unbounded');
-        node.style.removeProperty('--dpc-panellist-max');
+        node.removeAttribute('data-dpc-native');
+        try {
+          node.style.removeProperty('--dpc-panellist-max');
+        } catch {
+          /* a fake style object in the gate */
+        }
       }
       for (const node of Array.from(document.querySelectorAll('[data-dpc-collapsed]'))) node.removeAttribute('data-dpc-collapsed');
       if (regionEl) regionEl.removeAttribute('data-dpc-region');
@@ -3292,6 +3403,9 @@ function build(require) {
     const tagsOn = prefs.tags !== false;
     const countsOn = prefs.counts === true;
     const capNow = typeof prefs.panelMax === 'number' ? prefs.panelMax : 45;
+    // The host's own scroll supersedes the guard: say so instead of leaving a
+    // switch and a cap that no longer reach the list.
+    const guardNative = Boolean(engineRef) && engineRef.diagnostics().guard === 'native';
     const setLayout = (patch) => commit({ ...prefsNow(), ...patch });
     const layoutSwitch = (on, label, onClick) =>
       h(
@@ -3325,7 +3439,7 @@ function build(require) {
       h('p', { className: 'dpc-note' }, t('layoutHint')),
       layoutRow(
         t('layoutGuard'),
-        t('layoutGuardHint'),
+        guardNative ? t('layoutGuardNative') : t('layoutGuardHint'),
         layoutSwitch(layoutOn, t('layoutGuard'), () => setLayout({ guard: !layoutOn })),
       ),
       layoutRow(
@@ -3365,7 +3479,7 @@ function build(require) {
                 type: 'button',
                 className: value === capNow ? 'dpc-segmentBtn dpc-segmentBtn--on' : 'dpc-segmentBtn',
                 'aria-pressed': value === capNow ? 'true' : 'false',
-                disabled: !layoutOn,
+                disabled: !layoutOn || guardNative,
                 onClick: () => setLayout({ panelMax: value }),
               },
               value === 0 ? t('layoutMaxNone') : value + 'vh',
@@ -3724,7 +3838,10 @@ function build(require) {
        flex:none there and overflow:hidden below it (see #12083). */
     [data-dpc-list]{flex:0 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;max-height:max(120px,var(--dpc-panellist-max,45vh));overscroll-behavior:contain;scrollbar-gutter:stable}
     [data-dpc-list][data-dpc-unbounded]{max-height:none}
-    [data-dpc-list]>button{flex:none}
+    /* The host scrolls this list itself since 0.2.2-rc.1: never stack a second
+       scroll container inside it. */
+    [data-dpc-list][data-dpc-native]{max-height:none;overflow-y:visible;flex:0 0 auto}
+    [data-dpc-list]>[data-dpc-row]{flex:none}
     [data-dpc-region]{flex:1 1 auto;min-height:min(120px,18vh)}
 
     /* The original name of a renamed row. It sits after the host title, pushed

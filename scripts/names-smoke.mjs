@@ -25,7 +25,14 @@ function makeEl(tag = 'div') {
     children: [],
     parentElement: null,
     attributes: {},
-    style: {},
+    style: {
+      setProperty(name, value) {
+        this[name] = String(value);
+      },
+      removeProperty(name) {
+        delete this[name];
+      },
+    },
     className: '',
     textContent: '',
     isConnected: true,
@@ -101,6 +108,10 @@ function selectAll(root, selector) {
       hits = descendants(root).filter((child) => child.hasAttribute('data-dpc-sep'));
     } else if (part === '.dpc-nameTag') {
       hits = descendants(root).filter((child) => String(child.className).split(/\s+/).includes('dpc-nameTag'));
+    } else if (part === 'button[aria-haspopup="menu"]') {
+      hits = descendants(root).filter(
+        (child) => child.tagName === 'BUTTON' && child.getAttribute('aria-haspopup') === 'menu',
+      );
     } else if (part === 'button[data-dpc-label]') {
       hits = descendants(root).filter((child) => child.tagName === 'BUTTON' && child.hasAttribute('data-dpc-label'));
     } else {
@@ -131,15 +142,42 @@ function makeButton(label, withTitle = true) {
   return button;
 }
 
-function makeList(buttons, width = 260) {
-  const list = makeEl('div');
+/**
+ * The host list, in either shape.
+ *
+ * Legacy builds put each row button directly in the list. Since DSH 0.2.2 the
+ * list holds one wrapper per row (`div.panelEntry`) and ends with the "More"
+ * launcher, which is a row of its own that this plugin must leave alone.
+ */
+function makeList(buttons, width = 260, wrapped = false) {
+  const list = makeEl(wrapped ? 'nav' : 'div');
   list.className = 'panelList-test';
   list._width = width;
   const parent = makeEl('div');
   parent.appendChild(list);
-  parent.appendChild(makeEl('div'));
-  for (const button of buttons) list.appendChild(button);
-  return { list, parent };
+  const region = makeEl('div');
+  region.className = 'regionArea';
+  parent.appendChild(region);
+  const rows = [];
+  for (const button of buttons) {
+    if (!wrapped) {
+      list.appendChild(button);
+      rows.push(button);
+      continue;
+    }
+    const row = makeEl('div');
+    row.className = 'panelEntry';
+    row.appendChild(button);
+    list.appendChild(row);
+    rows.push(row);
+  }
+  const more = makeEl('div');
+  more.className = 'moreAnchor';
+  const moreButton = makeButton('更多');
+  moreButton.setAttribute('aria-haspopup', 'menu');
+  more.appendChild(moreButton);
+  if (wrapped) list.appendChild(more);
+  return { list, parent, rows, more, moreButton, region };
 }
 
 function makeWindow(localPrefs) {
@@ -310,10 +348,14 @@ async function run(localPrefs, options = {}) {
   const buttons = (options.labels || ['插件', '插件市场', '工作区管理', '面板管理']).map((label) =>
     makeButton(label, options.withTitle !== false),
   );
-  const { list } = makeList(buttons, options.width || 260);
+  const { list, rows, more, moreButton, region } = makeList(buttons, options.width || 260, options.wrapped === true);
   doc._list = list;
   const win = makeWindow(localPrefs);
   win.document = doc;
+  // The engine asks the parent for its overflow to decide whether the host
+  // already scrolls the list (DSH 0.2.2-rc.1+ does).
+  win.getComputedStyle = () => ({ overflowY: options.nativeOverflow || 'visible' });
+  globalThis.getComputedStyle = win.getComputedStyle;
   const app = makeCtx(registries, options.classify);
   registries.set('sidebar.panellist', []);
   seed(registries, buttons);
@@ -339,7 +381,7 @@ async function run(localPrefs, options = {}) {
   });
   mod.apply(app.ctx);
   await sleep(options.wait || 420);
-  return { buttons, list, calls, ctx: app.ctx, registries, win };
+  return { buttons, list, rows, more, moreButton, region, calls, ctx: app.ctx, registries, win };
 }
 
 const failures = [];
@@ -764,9 +806,79 @@ check(
 );
 check(allPrefs.auto === false, 'a manual classify run flipped the auto switch on');
 
+// 13. DSH 0.2.2 puts every row in a wrapper and ends the list with a "More"
+//     launcher. The engine must lay the wrappers out, leave the launcher last,
+//     step aside when the host scrolls the list itself, and keep the legacy
+//     button list working (every test above is that legacy shape).
+const wrapPrefs = {
+  version: 2,
+  order: ['plugins', 'dsh-market', 'workspace-control', 'panel-control'],
+  groups: [{ id: 'g1', name: '组' }],
+  assign: { plugins: 'g1' },
+  hidden: ['dsh-market'],
+};
+const wrapNative = await run(wrapPrefs, { wrapped: true, nativeOverflow: 'auto' });
+// Later runs replace the global scroll probe, so record what this pass wrote
+// instead of reading it again after the next engine has started.
+const wrappedNativeFlag = wrapNative.list.hasAttribute('data-dpc-native');
+const wrappedUnbounded = wrapNative.list.hasAttribute('data-dpc-unbounded');
+const wrappedMoreOrder = Number(wrapNative.more.style.order);
+const wrapRow = (label) => {
+  const at = wrapNative.buttons.findIndex(
+    (button) => button.getAttribute('data-dpc-label') === label || button.getAttribute('aria-label') === label,
+  );
+  return at >= 0 ? wrapNative.rows[at] : null;
+};
+check(
+  String(wrapNative.list.className).includes('panelList'),
+  'the wrapper list was not found through the panelList hook',
+);
+check(wrapNative.list.tagName === 'NAV', 'the engine treated a row as the navigation list');
+check(wrappedNativeFlag, 'the host scroll container was not detected');
+check(!wrappedUnbounded, 'the native list still carries the guard cap');
+check(Boolean(wrapRow('插件')) && wrapRow('插件').hasAttribute('data-dpc-row'), 'the wrapper row was not marked');
+check(
+  !wrapNative.buttons[0].hasAttribute('data-dpc-row'),
+  'the layout marker landed on the button instead of its wrapper',
+);
+check(Number(wrapRow('插件').style.order) > 0, 'the wrapper row did not get its group position');
+check(wrapRow('插件').getAttribute('data-dpc-group') === '组', 'the wrapper row did not get its group name');
+check(wrapRow('插件市场').style.display === 'none', 'a hidden row was not hidden on its wrapper');
+check(wrapRow('面板管理').style.display !== 'none', 'the manager row was hidden with the staged rows');
+check(
+  wrapNative.list.children.filter((node) => node.getAttribute('data-dpc-group-id') === 'g1').length === 1,
+  'a group separator was not inserted into the navigation list',
+);
+check(wrappedMoreOrder === 9000, 'the More launcher was sorted between the managed rows');
+check(
+  Number(wrapRow('插件').style.order) < wrappedMoreOrder,
+  'a managed row sorted after the More launcher',
+);
+check(
+  wrapNative.moreButton.style.order === undefined,
+  'the More button itself was ordered instead of its wrapper',
+);
+
+// The same wrapper shape without a host scroller keeps the guard and its cap.
+const wrapGuard = await run(wrapPrefs, { wrapped: true });
+const guardedListHook = wrapGuard.list.hasAttribute('data-dpc-list');
+const guardedNative = wrapGuard.list.hasAttribute('data-dpc-native');
+const guardedCap = wrapGuard.list.style['--dpc-panellist-max'];
+const guardedRegion = wrapGuard.region.hasAttribute('data-dpc-region');
+const guardedMore = Number(wrapGuard.more.style.order);
+check(guardedListHook, 'the guard list hook was dropped');
+check(!guardedNative, 'a guarded list claimed a native scroller');
+check(guardedCap === '45vh', 'the guard lost its height cap');
+check(guardedRegion, 'the region below the list lost its floor');
+check(guardedMore === 9000, 'the guarded list did not keep the More launcher last');
+
 console.log(
   JSON.stringify(
     {
+      wrappedNative: wrappedNativeFlag,
+      wrappedRows: wrapNative.rows.filter((row) => row.hasAttribute('data-dpc-row')).length,
+      wrappedMoreOrder,
+      wrappedGuardCap: guardedCap || null,
       renamed: Boolean(tag),
       tag: tag ? tag.textContent : null,
       tagsOff: !tagOf(noTags.buttons[0]),
