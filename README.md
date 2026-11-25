@@ -2,7 +2,7 @@
 
 DeepSeek Harness 的侧栏入口会越装越多。这个插件给顶部那一列加上排序、隐藏和分组，下面的会话和工作区就不会被挤掉。
 
-![界面预览：左右树与自动分类](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.5/assets/screenshot-panel.png)
+![界面预览：左右树与自动分类](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.7/assets/screenshot-panel.png)
 
 *界面预览 · 示例数据*
 
@@ -21,7 +21,7 @@ DeepSeek Harness 的侧栏入口会越装越多。这个插件给顶部那一列
 
 侧栏分组效果：
 
-![侧栏分组效果](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.5/assets/screenshot-sidebar-groups.png)
+![侧栏分组效果](https://raw.githubusercontent.com/QIUZAIYOU/dsh-panel-control/v0.10.7/assets/screenshot-sidebar-groups.png)
 
 设置页从上到下是：标题与提示、自动分类、分组树、侧栏布局、诊断。侧栏导航里的「面板管理」和 **设置 → 面板管理** 打开同一套界面。
 
@@ -33,7 +33,7 @@ DeepSeek Harness 的侧栏入口会越装越多。这个插件给顶部那一列
 
 ```bash
 cd C:/Users/<you>/.dsh/profiles/desktop
-npm install dsh-panel-control@0.10.5
+npm install dsh-panel-control@0.10.7
 ```
 
 把包名加进同一目录 `package.json` 的 `dsh.profile.bundles`：
@@ -42,7 +42,7 @@ npm install dsh-panel-control@0.10.5
 "dsh": { "profile": { "bundles": [ ..., "dsh-panel-control" ] } }
 ```
 
-装好后重载一次页面（界面里的刷新按钮，或重启 DSH）。
+装好后重载一次页面（界面里的刷新按钮，或重启 DSH）。更新方式见 [更新说明](docs/updating.md)。
 
 ## 配置
 
@@ -58,6 +58,8 @@ npm install dsh-panel-control@0.10.5
 - **设置页入口没补出来，或补出来和设置弹窗不一样**：查看 `host.log` 里的 `bridge-scan`。`wiring` 的 `i/l/s` 分别对应 inject、locale、store。详见 [设置页补入口](docs/bridged-settings-pages.md)。
 - **界面改了却没变化**：页面可能还在用旧的 bundle revision，重载一次。
 - **改了代码没反应**：确认 `BUILD_STAMP` 与 `package.json` 版本一致，再运行 `npm run check`。
+- **更新插件或折叠侧栏后，面板行只剩图标、名字空了**：0.10.7 修好了。旧版本改名字时换掉了宿主渲染的名字节点，插件一更新或侧栏一折叠，宿主重绘后那一行就没有名字，重载页面才回来。升到 0.10.7 即可。
+- **更新时报「profile reload requires the root Include entry」或「这个插件正在使用中」**：DSH 桌面端更新链路的问题，按 [更新说明](docs/updating.md) 手动升级，别反复点「更新」。
 
 ## 开发
 

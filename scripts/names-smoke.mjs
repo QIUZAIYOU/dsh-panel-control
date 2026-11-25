@@ -57,14 +57,24 @@ function makeEl(tag = 'div') {
       return Object.prototype.hasOwnProperty.call(el.attributes, key);
     },
     appendChild(child) {
+      if (child && child.nodeType === 3) {
+        el._text = child;
+        return child;
+      }
       child.parentElement = el;
       el.children.push(child);
       return child;
     },
     remove() {
-      if (!el.parentElement) return;
-      const at = el.parentElement.children.indexOf(el);
-      if (at >= 0) el.parentElement.children.splice(at, 1);
+      const parent = el.parentElement;
+      if (parent && parent._text === el) {
+        parent._text = null;
+        el.parentElement = null;
+        return;
+      }
+      if (!parent) return;
+      const at = parent.children.indexOf(el);
+      if (at >= 0) parent.children.splice(at, 1);
       el.parentElement = null;
     },
     addEventListener() {},
@@ -79,10 +89,28 @@ function makeEl(tag = 'div') {
       return selectAll(el, selector)[0] || null;
     },
     contains(node) {
-      if (node === el) return true;
+      if (node === el || el._text === node) return true;
       return el.children.some((child) => child.contains && child.contains(node));
     },
+    nodeType: 1,
+    _text: null,
   };
+  // A real element keeps its text in a child node, and textContent swaps that
+  // node out. The engine must write through the node instead, so the fixture has
+  // to model it: appending a text node is not the same as replacing the text.
+  Object.defineProperty(el, 'firstChild', {
+    get: () => el._text || el.children[0] || null,
+  });
+  Object.defineProperty(el, 'childNodes', {
+    get: () => (el._text ? [el._text].concat(el.children) : el.children.slice()),
+  });
+  Object.defineProperty(el, 'textContent', {
+    get: () => (el._text ? el._text.nodeValue : el.children.map((child) => child.textContent || '').join('')),
+    set: (value) => {
+      el.children.length = 0;
+      el._text = String(value) === '' ? null : { nodeType: 3, nodeValue: String(value) };
+    },
+  });
   return el;
 }
 
@@ -214,7 +242,7 @@ function makeDocument() {
     title: '',
     visibilityState: 'visible',
     createElement: (tag) => makeEl(tag),
-    createTextNode: () => ({ textContent: '' }),
+    createTextNode: (text) => ({ nodeType: 3, nodeValue: String(text) }),
     createDocumentFragment: () => makeEl('div'),
     querySelectorAll(selector) {
       if (selector === '[class*="panelList"]') return doc._list ? [doc._list] : [];
@@ -403,6 +431,46 @@ check(tag && tag.textContent === 'plugin-manager', 'the tag does not contain the
 check(tag && tag.getAttribute('aria-hidden') === 'true', 'the tag is not hidden from assistive tech');
 check(!tagOf(renamed.buttons[1]), 'an unrenamed row grew a tag');
 check(first.style.order !== undefined, 'the engine did not apply the row order');
+
+// 1b. The host owns the name as a text node and re-renders it. Replacing that
+//     node with textContent detaches what React still holds — the row then loses
+//     its name until a reload. The engine must write the existing node and put
+//     its name back after the host rewrites the row.
+const rerender = await run({ version: 2, names: { plugins: '我的插件' }, tags: false });
+const rerenderTitle = titleOf(rerender.buttons[0]);
+const keptNode = rerenderTitle.firstChild;
+await sleep(1100);
+check(rerenderTitle.firstChild === keptNode, 'a later pass replaced the host text node');
+check(rerenderTitle.childNodes.length === 1, 'the engine left a second text node in the host title');
+rerenderTitle.textContent = '插件';
+const hostNode = rerenderTitle.firstChild;
+await sleep(1100);
+check(rerenderTitle.textContent === '我的插件', 'a host re-render left the renamed row without its name');
+check(rerenderTitle.firstChild === hostNode, 'the engine replaced the text node the host had just written');
+
+// 1c. A host name span that is currently empty gets no injected text: the engine
+//     waits for the host's own node instead of creating one the host will duplicate.
+const blank = await run(
+  { version: 2, names: { plugins: '我的插件' }, tags: false },
+  { labels: ['插件', '', '工作区管理', '面板管理'] },
+);
+const blankTitle = titleOf(blank.buttons[1]);
+await sleep(1100);
+check(blankTitle.childNodes.length === 0, 'the engine invented a text node for an empty host name');
+check(blankTitle.textContent === '', 'the engine wrote a name with no host text node to write through');
+
+// 1d. A row the host did not render (an unpinned entry) must not shift the rows
+//     it did render onto the wrong entries; anchors fill only the equal gaps.
+const pinned = await run(
+  { version: 2, names: { 'dsh-market': '市场' }, tags: false },
+  { labels: ['插件', '', '工作区管理'] },
+);
+check(pinned.buttons[0].getAttribute('aria-label') === '插件', 'a missing row shifted the first row');
+check(pinned.buttons[1].getAttribute('aria-label') === '市场', 'the unlabeled row was not matched between its anchors');
+check(
+  pinned.buttons[2].getAttribute('aria-label') === '工作区管理',
+  'a missing row shifted the last rendered row',
+);
 
 // 2. The switch removes the tag but keeps the custom name.
 const noTags = await run({ version: 2, names: { plugins: '我的插件' }, tags: false });

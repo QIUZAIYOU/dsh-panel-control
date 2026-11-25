@@ -300,6 +300,25 @@ expect(
   'package.json description is missing the Chinese sidebar summary',
 );
 
+// 更新失败的两条报错来自宿主（profile reload 取不到根 Include → 条目残留），
+// 插件改不动它，只能把可用的更新路径写清楚。README 指过去的那份文档必须真的存在。
+const updateGuide = 'docs/updating.md';
+expect(readme.includes(updateGuide), 'README no longer links the update guide');
+expect(
+  existsSync(new URL('../' + updateGuide, import.meta.url)),
+  'the update guide ' + updateGuide + ' is missing',
+);
+
+// 0.2.2-rc.5 renders the row name as a React text node and only while the sidebar
+// is wide. Replacing that node detached React's copy and left rows icon-only after
+// an update or a fold; the engine must write through the existing node instead.
+expect(!client.includes('textContent = shown'), 'the engine replaced the host name node again');
+expect(client.includes('const writeTitleName = (title, text) => {'), 'the in-place name writer is gone');
+expect(client.includes('first.nodeValue !== text'), 'the name writer no longer writes the text node');
+expect(
+  client.includes('characterData: true') && client.includes("attributeFilter: ['class', 'style', 'aria-label']"),
+  'the observer no longer hears the host rewrite a name',
+);
 expect(client.includes("const BUILD_STAMP = 'dsh-panel-control/" + pkg.version + "'"), 'BUILD_STAMP and package.json version disagree');
 expect(pkg.scripts && String(pkg.scripts.check).includes('layout-smoke'), 'npm run check no longer runs this gate');
 expect(pkg.scripts && String(pkg.scripts.check).includes('bridge-smoke'), 'npm run check no longer runs the bridge gate');

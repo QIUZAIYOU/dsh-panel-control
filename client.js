@@ -5,7 +5,7 @@
   // Everything below therefore lives inside this closure. Re-evaluation must stay possible: when the
   // plugin is switched off the loader drops our factory, so switching it back on re-executes this
   // script and needs the registration that follows.
-  const BUILD_STAMP = 'dsh-panel-control/0.10.5';
+  const BUILD_STAMP = 'dsh-panel-control/0.10.7';
   try { window.__dpcEvaluated = BUILD_STAMP; } catch { /* ignore */ }
 /**
  * Client half of dsh-panel-control.
@@ -1556,6 +1556,29 @@ function build(require) {
         });
       }
     }
+    // A host that renders only some rows without their label leaves those rows
+    // unmatched, and one missing label also breaks the whole-count rule above.
+    // Anchor on the pairs that did match and fill only the gaps between anchors,
+    // where the counts agree: pinning can legitimately drop a row from the DOM.
+    const anchors = entries
+      .map((entry, index) => ({ index, button: map.get(entry.id) }))
+      .filter((item) => item.button !== undefined)
+      .map((item) => ({ entryAt: item.index, buttonAt: buttons.indexOf(item.button) }));
+    anchors.push({ entryAt: entries.length, buttonAt: buttons.length });
+    let entryFrom = 0;
+    let buttonFrom = 0;
+    for (const anchor of anchors) {
+      const gapEntries = entries.slice(entryFrom, anchor.entryAt).filter((entry) => !map.has(entry.id));
+      const gapButtons = buttons.slice(buttonFrom, anchor.buttonAt).filter((button) => !used.has(button));
+      if (gapEntries.length > 0 && gapEntries.length === gapButtons.length) {
+        gapEntries.forEach((entry, index) => {
+          map.set(entry.id, gapButtons[index]);
+          used.add(gapButtons[index]);
+        });
+      }
+      entryFrom = anchor.entryAt + 1;
+      buttonFrom = anchor.buttonAt + 1;
+    }
     return map;
   }
 
@@ -1671,14 +1694,18 @@ function build(require) {
      * which half dropped it.
      */
     let dumpedKeys = '';
-    const dumpPanellist = (plan, list) => {
+    const dumpPanellist = (plan, list, map) => {
       try {
         const rows = rowsOf(list).map(({ row, button }) => {
-          const label = button.getAttribute('aria-label') || '';
+          const label = button.getAttribute('data-dpc-label') || button.getAttribute('aria-label') || '';
+          // The visible name is the host's text node; an empty one after a pass is
+          // the difference between "not mapped" and "mapped but nameless".
+          const title = titleSpanOf(button);
+          const name = title ? String(title.textContent || '') : '-';
           const order = row.style.order || '';
           const shown = row.style.display === 'none' ? 'hidden' : 'shown';
           const group = row.getAttribute('data-dpc-group') || '';
-          return `${label}|${shown}|${order}|${group}`;
+          return `${label}|${shown}|${order}|${group}|${name}`;
         });
         const key = rows.join(';');
         if (key === dumpedKeys) return;
@@ -1690,6 +1717,7 @@ function build(require) {
           seps: list.querySelectorAll('[data-dpc-sep]').length,
           entries: plan.entries.map((entry) => `${entry.id}@${entry.order}`).join(','),
           hidden: Array.from(plan.hiddenIds).join(','),
+          mapped: map ? map.size : 0,
           rows: rows.join(' · ').slice(0, 1500),
         });
       } catch {
@@ -1907,8 +1935,9 @@ function build(require) {
         observer.observe(target, {
           childList: true,
           subtree: true,
+          characterData: true,
           attributes: true,
-          attributeFilter: ['class', 'style'],
+          attributeFilter: ['class', 'style', 'aria-label'],
         });
         observed = target;
         observing = true;
@@ -1928,6 +1957,21 @@ function build(require) {
         return child;
       }
       return null;
+    };
+
+    /**
+     * The name is a text node the host's renderer owns. Replacing it with
+     * textContent detaches the node React still holds, so its next pass writes to
+     * an orphan and the row loses its name until a reload. Write that node in
+     * place; when there is no text node yet, leave the row to the next pass.
+     */
+    const writeTitleName = (title, text) => {
+      const first = title.firstChild;
+      if (!first || first.nodeType !== 3) return false;
+      const nodes = title.childNodes;
+      if (nodes && nodes.length > 1) return false;
+      if (first.nodeValue !== text) first.nodeValue = text;
+      return true;
     };
 
     /**
@@ -1951,7 +1995,7 @@ function build(require) {
           }
           if (button.getAttribute('aria-label') !== shown) button.setAttribute('aria-label', shown);
           const title = titleSpanOf(button);
-          if (title && title.textContent !== shown) title.textContent = shown;
+          if (title) writeTitleName(title, shown);
           let tag = null;
           for (const child of Array.from(button.children || [])) {
             const className = typeof child.className === 'string' ? child.className : '';
@@ -2129,7 +2173,7 @@ function build(require) {
 
         // Read the list back after the pass wrote to it: a dump taken before
         // the ordering only shows the host's own render.
-        dumpPanellist(plan, list);
+        dumpPanellist(plan, list, map);
         diag.rows = rows.length;
         diag.mapped = map.size;
         diag.error = null;
